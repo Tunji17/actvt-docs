@@ -1,0 +1,13 @@
+name = "actvt-docs"
+compatibility_date = "2024-01-01"
+
+[env.production]
+name = "actvt-docs"
+routes = [
+  { pattern = "docs.actvt.io", custom_domain = true }
+]
+
+# For Cloudflare Pages
+# Build command: npm run build
+# Build output directory: build
+# Root directory: docusaurus

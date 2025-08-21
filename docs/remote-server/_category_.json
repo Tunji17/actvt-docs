@@ -1,0 +1,8 @@
+{
+  "label": "Remote Server Setup",
+  "position": 3,
+  "link": {
+    "type": "doc",
+    "id": "remote-server/overview"
+  }
+}

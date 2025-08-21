@@ -1,0 +1,43 @@
+/**
+ * Any CSS included here will be global. The classic template
+ * bundles Infima by default. Infima is a CSS framework designed to
+ * work well for content-centric websites.
+ */
+
+/* Custom Actvt dark theme colors and fonts */
+:root {
+  --ifm-font-family-base: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --ifm-color-primary: #4da3e0;
+  --ifm-color-primary-dark: #3398dd;
+  --ifm-color-primary-darker: #2691dc;
+  --ifm-color-primary-darkest: #0f7bc7;
+  --ifm-color-primary-light: #67aee3;
+  --ifm-color-primary-lighter: #74b5e5;
+  --ifm-color-primary-lightest: #95c8ea;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+}
+
+/* Font smoothing for better rendering */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom styling for homepage buttons */
+.button--primary {
+  margin-left: 1rem;
+}
+
+/* Code block styling */
+.prism-code {
+  font-size: 0.9rem;
+}
+
+/* Responsive button spacing */
+@media screen and (max-width: 996px) {
+  .button--primary {
+    margin-left: 0;
+    margin-top: 0.5rem;
+  }
+}
