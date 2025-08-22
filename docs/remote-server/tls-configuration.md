@@ -120,6 +120,8 @@ You should see:
 ✓ Validated
 ```
 
+Head back to the [Vector Setup Guide](vector-setup.md) to run Vector and ensure it starts correctly with TLS enabled.
+
 ## Step 6: Set Up Auto-Renewal
 
 Let's Encrypt certificates expire every 90 days. Set up automatic renewal:
