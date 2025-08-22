@@ -20,9 +20,6 @@ Before setting up TLS certificates, ensure you have:
 Certbot is Let's Encrypt's official client for obtaining SSL certificates:
 
 ```bash
-# Update package list
-sudo apt update
-
 # Install Certbot
 sudo apt install certbot -y
 
@@ -37,12 +34,11 @@ certbot 1.21.0
 
 ## Step 2: Obtain Let's Encrypt Certificate
 
-Use Certbot's standalone mode to obtain a certificate. Replace `monitor.yourdomain.com` with your actual domain:
+Use Certbot's standalone mode to obtain a certificate:
+
+> **⚠️ Note:** Replace `monitor.yourdomain.com` with your actual domain in all commands throughout this guide.
 
 ```bash
-# Stop Vector temporarily to free port 80
-pkill -f "vector --config /etc/vector/vector.toml"
-
 # Obtain certificate using standalone mode
 sudo certbot certonly --standalone -d monitor.yourdomain.com
 
@@ -110,27 +106,18 @@ If the paths are different, update them:
 sudo nano /etc/vector/vector.toml
 ```
 
-## Step 5: Start Vector with TLS
+## Step 5: Validate Vector with TLS
 
-Restart Vector to apply the TLS configuration:
+Validate Vector configuration without any errors:
 
 ```bash
-# Start Vector with TLS enabled
-nohup vector --config /etc/vector/vector.toml > /var/log/vector/stdout.log 2>&1 &
-disown
-
-# Verify Vector is running
-ps aux | grep vector
-
-# Check logs for TLS initialization
-tail -f /var/log/vector/stdout.log
+# Validate configuration file
+vector validate /etc/vector/vector.toml
 ```
 
-Look for log messages indicating successful TLS setup:
+You should see:
 ```
-INFO vector::api: Building API server. address=127.0.0.1:8686
-INFO vector::sinks::websocket::server: Starting websocket server. address=0.0.0.0:4096
-INFO vector::tls: TLS certificate loaded successfully
+✓ Validated
 ```
 
 ## Step 6: Set Up Auto-Renewal
@@ -160,10 +147,7 @@ chmod 600 /etc/vector/certs/server.key
 chmod 644 /etc/vector/certs/server.crt
 
 # Restart Vector to load new certificates
-pkill -f "vector --config /etc/vector/vector.toml"
-sleep 2
-nohup vector --config /etc/vector/vector.toml > /var/log/vector/stdout.log 2>&1 &
-disown
+sudo systemctl restart vector
 
 echo "Certificates renewed and Vector restarted: $(date)" >> /var/log/vector/cert-renewal.log
 ```
@@ -249,9 +233,7 @@ In the Actvt application:
 sudo certbot renew
 
 # Restart Vector
-pkill -f "vector --config /etc/vector/vector.toml"
-nohup vector --config /etc/vector/vector.toml > /var/log/vector/stdout.log 2>&1 &
-disown
+sudo systemctl restart vector
 
 # Check certificate expiration
 openssl x509 -in /etc/vector/certs/server.crt -noout -dates

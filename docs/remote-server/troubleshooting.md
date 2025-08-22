@@ -13,7 +13,7 @@ Run these commands to quickly identify where the problem lies:
 ```bash
 # 1. Check if Vector is installed and running
 which vector && echo "✓ Vector installed" || echo "✗ Vector not found"
-ps aux | grep vector | grep -v grep && echo "✓ Vector running" || echo "✗ Vector not running"
+sudo systemctl is-active vector >/dev/null 2>&1 && echo "✓ Vector running" || echo "✗ Vector not running"
 
 # 2. Check if port 4096 is listening
 netstat -tlnp | grep 4096 && echo "✓ Port 4096 listening" || echo "✗ Port 4096 not listening"
@@ -82,7 +82,7 @@ openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt /etc/vector/certs/serv
 **Diagnosis**:
 ```bash
 # Check if Vector is running
-systemctl status vector || ps aux | grep vector
+sudo systemctl status vector
 
 # Check if port is listening locally
 netstat -tlnp | grep 4096
@@ -100,11 +100,10 @@ wscat -c wss://localhost:4096
 
 ```bash
 # Start Vector
-nohup vector --config /etc/vector/vector.toml > /var/log/vector/stdout.log 2>&1 &
-disown
+sudo systemctl start vector
 
 # Check logs for errors
-tail -f /var/log/vector/stdout.log
+sudo journalctl -u vector -f
 ```
 
 2. **Firewall blocking connections** - Check your provider's firewall guide:
@@ -164,14 +163,14 @@ curl -I https://your-domain.com:4096
 
 ```bash
 # Check if vector is installed
-ls -la /usr/local/bin/vector
+ls -la /usr/bin/vector
 
-# If not found, reinstall
-curl --proto '=https' --tlsv1.2 -sSfL https://sh.vector.dev | bash
+# If not found, reinstall via package manager
+# For Debian/Ubuntu:
+sudo apt-get update && sudo apt-get install vector
 
-# Add to PATH
-echo 'export PATH="$PATH:/usr/local/bin"' >> ~/.bashrc
-source ~/.bashrc
+# For RHEL/CentOS/Amazon Linux:
+sudo yum install vector
 
 # Verify installation
 vector --version
@@ -181,13 +180,13 @@ vector --version
 
 ```bash
 # Fix Vector directory permissions
-sudo chown -R $USER:$USER /etc/vector
-sudo chown -R $USER:$USER /var/log/vector
+sudo chown -R vector:vector /etc/vector
+sudo chown -R vector:vector /var/log/vector
 
 # Fix certificate permissions specifically
-sudo chown $USER:$USER /etc/vector/certs/server.*
-chmod 644 /etc/vector/certs/server.crt
-chmod 600 /etc/vector/certs/server.key
+sudo chown vector:vector /etc/vector/certs/server.*
+sudo chmod 644 /etc/vector/certs/server.crt
+sudo chmod 600 /etc/vector/certs/server.key
 ```
 
 ### Configuration Errors
@@ -237,10 +236,10 @@ sudo kill <PID>
 
 ```bash
 # Check Vector resource usage
-top -p $(pgrep vector)
+sudo systemctl status vector
 
 # Check Vector logs for errors
-tail -f /var/log/vector/stdout.log
+sudo journalctl -u vector -f
 
 # Reduce collection frequency in vector.toml
 [sources.system_metrics]
@@ -251,7 +250,7 @@ scrape_interval_secs = 5  # Instead of 1
 
 ```bash
 # Check Vector logs
-tail -n 50 /var/log/vector/stdout.log
+sudo journalctl -u vector -n 50
 
 # Common issues:
 # - Configuration file errors
@@ -259,8 +258,8 @@ tail -n 50 /var/log/vector/stdout.log
 # - Port conflicts
 # - Missing dependencies
 
-# Test Vector manually
-vector --config /etc/vector/vector.toml --verbose
+# Test Vector manually (as vector user)
+sudo -u vector vector --config /etc/vector/vector.toml --verbose
 ```
 
 ### GPU Monitoring Issues
@@ -308,7 +307,7 @@ curl -I http://your-domain.com
 
 # Stop services using port 80 during certificate generation
 sudo systemctl stop apache2 nginx
-pkill -f vector  # Temporarily stop vector if it's using port 80
+# Note: Vector should not be using port 80, it uses port 4096
 ```
 
 **"Port 80 already in use"**
@@ -352,9 +351,9 @@ openssl x509 -in /etc/vector/certs/server.crt -text -noout | grep "Not After"
 ls -la /etc/vector/certs/server.*
 
 # Fix permissions if needed
-chown $USER:$USER /etc/vector/certs/server.*
-chmod 644 /etc/vector/certs/server.crt
-chmod 600 /etc/vector/certs/server.key
+sudo chown vector:vector /etc/vector/certs/server.*
+sudo chmod 644 /etc/vector/certs/server.crt
+sudo chmod 600 /etc/vector/certs/server.key
 ```
 
 **Certificate expired**
@@ -371,9 +370,7 @@ sudo cp /etc/letsencrypt/live/your-domain.com/fullchain.pem /etc/vector/certs/se
 sudo cp /etc/letsencrypt/live/your-domain.com/privkey.pem /etc/vector/certs/server.key
 
 # Restart Vector
-pkill -f vector
-nohup vector --config /etc/vector/vector.toml > /var/log/vector/stdout.log 2>&1 &
-disown
+sudo systemctl restart vector
 ```
 
 ### Auto-Renewal Issues
@@ -528,13 +525,14 @@ ss -tlnp | grep 4096
 lsof -i :4096
 
 # Process monitoring
-ps aux | grep vector
-pgrep -f vector
-kill -USR1 $(pgrep vector)  # Send signal to Vector for status
+sudo systemctl status vector
+sudo systemctl is-active vector
+sudo systemctl is-enabled vector
 
 # Log monitoring
-tail -f /var/log/vector/stdout.log
-journalctl -u vector -f  # If Vector is running as systemd service
+sudo journalctl -u vector -f
+sudo journalctl -u vector -n 100
+sudo journalctl -u vector --since "1 hour ago"
 
 # Certificate debugging
 openssl x509 -in /etc/vector/certs/server.crt -text -noout
@@ -544,19 +542,24 @@ openssl s_client -connect localhost:4096 -servername your-domain.com
 ### Log File Locations
 
 ```bash
-# Vector logs
-/var/log/vector/stdout.log
-/var/log/vector/stderr.log
+# Vector logs (via journald)
+sudo journalctl -u vector
 
 # System logs
 /var/log/syslog
 /var/log/auth.log
 
-# Certificate renewal logs
+# Certificate renewal logs (if using custom renewal script)
 /var/log/vector/cert-renewal.log
 
 # Let's Encrypt logs
 /var/log/letsencrypt/letsencrypt.log
+
+# View Vector logs with different options
+sudo journalctl -u vector -f                    # Follow logs
+sudo journalctl -u vector -n 100                # Last 100 lines
+sudo journalctl -u vector --since "1 hour ago"  # Last hour
+sudo journalctl -u vector --until "2 hours ago" # Up to 2 hours ago
 ```
 
 ## Common Error Messages
@@ -586,7 +589,7 @@ lsb_release -a
 
 echo "=== Vector Status ==="
 vector --version
-ps aux | grep vector
+sudo systemctl status vector
 
 echo "=== Network Status ==="
 netstat -tlnp | grep 4096
@@ -597,7 +600,7 @@ ls -la /etc/vector/certs/
 openssl x509 -in /etc/vector/certs/server.crt -noout -dates
 
 echo "=== Vector Logs (last 50 lines) ==="
-tail -n 50 /var/log/vector/stdout.log
+sudo journalctl -u vector -n 50
 
 echo "=== Vector Config Validation ==="
 vector validate /etc/vector/vector.toml
@@ -628,7 +631,7 @@ With detailed information, issues can be resolved much faster.
 ### Most Common Issues (90% of problems)
 
 1. **Firewall blocking port 4096** → Check cloud provider firewall
-2. **Vector not running** → Start with `nohup vector --config /etc/vector/vector.toml > /var/log/vector/stdout.log 2>&1 &`
+2. **Vector not running** → Start with `sudo systemctl start vector`
 3. **Certificate issues** → Check files exist in `/etc/vector/certs/` and have correct permissions
 4. **Wrong URL format in Actvt** → Use `wss://your-domain.com:4096`
 5. **DNS not resolving** → Check domain points to server IP
@@ -637,13 +640,11 @@ With detailed information, issues can be resolved much faster.
 
 ```bash
 # Restart everything
-pkill -f vector
-nohup vector --config /etc/vector/vector.toml > /var/log/vector/stdout.log 2>&1 &
-disown
+sudo systemctl restart vector
 
 # Fix common permissions
-sudo chown -R $USER:$USER /etc/vector
-chmod 600 /etc/vector/certs/server.key
+sudo chown -R vector:vector /etc/vector
+sudo chmod 600 /etc/vector/certs/server.key
 
 # Test connection
 wscat -c wss://your-domain.com:4096

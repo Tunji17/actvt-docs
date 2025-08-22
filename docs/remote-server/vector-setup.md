@@ -16,75 +16,71 @@ Vector is an open-source tool built in Rust that:
 
 ## Installation
 
-### Step 1: Download and Install Vector
+### Step 1: Install Vector via Package Repository
 
-Vector provides an official installation script that works on most Linux distributions:
+Vector provides official package repositories for easy installation and updates. Choose your distribution:
+
+#### For Debian/Ubuntu Systems
 
 ```bash
-# Download and run the Vector installation script
-curl --proto '=https' --tlsv1.2 -sSfL https://sh.vector.dev | bash
+# Add Vector repository and install script
+bash -c "$(curl -L https://setup.vector.dev)"
+
+# Update package list and install Vector
+sudo apt-get update
+sudo apt-get install vector
 ```
 
-This script will:
-- Detect your operating system
-- Download the appropriate Vector binary
-- Install Vector to `/usr/local/bin/vector`
-- Set up the necessary permissions
-
-### Step 2: Add Vector to PATH
-
-After installation, add Vector to your shell PATH:
+#### For RHEL/CentOS/Amazon Linux Systems
 
 ```bash
-# Add Vector to PATH (bash/zsh)
-source ~/.zprofile
+# Add Vector repository and install script
+bash -c "$(curl -L https://setup.vector.dev)"
 
-# For bash users, you might need:
-source ~/.bashrc
+# Install Vector (use dnf on newer systems)
+sudo yum install vector
+```
 
-# Verify installation
+### Step 2: Verify Installation
+
+The package installation automatically:
+- Creates the `vector` system user and group
+- Sets up systemd service files
+- Creates configuration directories with proper permissions
+- Installs Vector binary to `/usr/bin/vector`
+
+Verify the installation:
+
+```bash
+# Check Vector version
 vector --version
+
+# Verify systemd service is available
+sudo systemctl status vector
+
+# Check that Vector user was created
+id vector
 ```
 
 You should see output like:
 ```
 vector 0.34.0 (x86_64-unknown-linux-gnu)
-```
-
-### Alternative: Manual Installation
-
-If the script doesn't work, you can install manually:
-
-```bash
-# Download Vector binary
-wget https://github.com/vectordotdev/vector/releases/download/v0.34.0/vector-0.34.0-x86_64-unknown-linux-gnu.tar.gz
-
-# Extract and install
-tar -xzf vector-0.34.0-x86_64-unknown-linux-gnu.tar.gz
-sudo mv vector-x86_64-unknown-linux-gnu/bin/vector /usr/local/bin/
-sudo chmod +x /usr/local/bin/vector
-
-# Verify installation
-vector --version
+● vector.service - Vector
+   Loaded: loaded (/lib/systemd/system/vector.service; disabled; vendor preset: enabled)
+   Active: inactive (dead)
+uid=999(vector) gid=999(vector) groups=999(vector)
 ```
 
 ## Configuration
 
-### Step 3: Create Configuration Directory
+### Step 3: Create Vector Configuration
 
-```bash
-# Create Vector configuration directory
-sudo mkdir -p /etc/vector
-sudo mkdir -p /var/log/vector
+The package installation automatically creates:
+- `/etc/vector/` directory for configuration files
+- `/var/log/vector/` directory for logs (when needed)
+- Proper ownership and permissions
 
-# Set permissions
-sudo chown -R $USER:$USER /etc/vector
-sudo chown -R $USER:$USER /var/log/vector
-```
-
-### Step 4: Create Vector Configuration
-
-Create the main configuration file:
+Now create the main configuration file:
 
 ```bash
 # Create configuration file
@@ -265,7 +261,7 @@ inputs  = ["format_metrics"]
 
 ## Testing Configuration
 
-### Step 5: Validate Configuration
+### Step 4: Validate Configuration
 
 Before running Vector, validate your configuration:
 
@@ -279,65 +275,52 @@ You should see:
 ✓ Validated
 ```
 
-If you see errors, review the configuration file for syntax issues.
+If you do not have TLS certificates set up yet, you will see an error
 
-### Step 6: Test Vector Output
-
-Vector includes a powerful "tap" feature to test data processing, make sure api is enabled in your configuration:
-
-```bash
-# Test system metrics processing (run this in background)
-vector --config /etc/vector/vector.toml &
-
-# In another terminal, test the output
-vector tap format_metrics --config /etc/vector/vector.toml
+```
+x Sink "websocket_out": Could not open certificate file "/etc/vector/certs/server.crt": No such file or directory
 ```
 
-You should see JSON output like:
-```json
-{
-  "host": "your-hostname",
-  "metric_type": "cpu_idle",
-  "cpu": "0",
-  "value": 12345.67,
-  "timestamp": "2024-01-15T10:30:45Z"
-}
-```
-
-Press `Ctrl+C` to stop the tap output.
+If you see any other errors, review the configuration file for syntax issues. Now proceed to the [TLS Configuration Guide](tls-configuration.md) to set up certificates before running Vector.
 
 ## Running Vector
 
-### Step 7: Start Vector Service
+### Step 6: Start Vector Service
 
-For production use, run Vector as a background service:
+Enable and start Vector as a systemd service:
 
 ```bash
-# Stop any existing Vector process
-pkill -f "vector --config /etc/vector/vector.toml"
+# Enable Vector to start on boot
+sudo systemctl enable vector
 
-# Start Vector in background with nohup
-nohup vector --config /etc/vector/vector.toml > /var/log/vector/stdout.log 2>&1 &
-disown
+# Start Vector service
+sudo systemctl start vector
 ```
 
-### Step 8: Verify Vector is Running
+### Step 7: Verify Vector is Running
 
 ```bash
-# Check if Vector process is running
-ps aux | grep vector
+# Check Vector service status
+sudo systemctl status vector
 
-# Check Vector logs
-tail -f /var/log/vector/stdout.log
+# View Vector logs
+sudo journalctl -u vector -f
 
 # Verify WebSocket server is listening
 sudo netstat -tlnp | grep 4096
 ```
 
 You should see:
-- Vector process in ps output
+- Service status showing "active (running)"
 - Log messages showing successful startup
 - Port 4096 in LISTEN state
+
+Also from your local machine, you can test the WebSocket connection (replace `monitor.yourdomain.com` with your server's domain):
+
+```bash
+# Test WebSocket connection
+wscat -c wss://monitor.yourdomain.com:4096
+```
 
 ## Managing Vector
 
@@ -345,26 +328,90 @@ You should see:
 
 ```bash
 # Check Vector status
-ps aux | grep vector
+sudo systemctl status vector
 
 # Stop Vector
-pkill -f "vector --config /etc/vector/vector.toml"
+sudo systemctl stop vector
 
 # Start Vector
-nohup vector --config /etc/vector/vector.toml > /var/log/vector/stdout.log 2>&1 &
-disown
+sudo systemctl start vector
 
 # Restart Vector
-pkill -f "vector --config /etc/vector/vector.toml"
-sleep 2
-nohup vector --config /etc/vector/vector.toml > /var/log/vector/stdout.log 2>&1 &
-disown
+sudo systemctl restart vector
 
-# View logs
-tail -f /var/log/vector/stdout.log
+# Reload configuration without restarting
+sudo systemctl reload vector
+
+# View live logs
+sudo journalctl -u vector -f
 
 # View last 100 log lines
-tail -n 100 /var/log/vector/stdout.log
+sudo journalctl -u vector -n 100
+
+# View logs from last hour
+sudo journalctl -u vector --since "1 hour ago"
+
+# Enable Vector to start on boot
+sudo systemctl enable vector
+
+# Disable Vector from starting on boot
+sudo systemctl disable vector
+```
+
+### Advanced Service Configuration
+
+For enhanced service management, you can create a systemd override file:
+
+```bash
+# Create override directory
+sudo mkdir -p /etc/systemd/system/vector.service.d
+
+# Create override configuration
+sudo nano /etc/systemd/system/vector.service.d/override.conf
+```
+
+Add this configuration for robust restart policies:
+
+```ini
+[Service]
+# Enhanced restart policies
+Restart=always
+RestartSec=10
+StartLimitBurst=5
+StartLimitInterval=60s
+
+# Resource limits (optional)
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Additional environment variables (optional)
+Environment="VECTOR_LOG=info"
+```
+
+After creating the override file:
+
+```bash
+# Reload systemd to apply changes
+sudo systemctl daemon-reload
+
+# Restart Vector to apply new configuration
+sudo systemctl restart vector
+```
+
+### Package Updates
+
+To update Vector to the latest version:
+
+```bash
+# Debian/Ubuntu
+sudo apt-get update
+sudo apt-get upgrade vector
+
+# RHEL/CentOS/Amazon Linux
+sudo yum update vector  # or 'sudo dnf update vector' on newer systems
+
+# After updating, restart the service
+sudo systemctl restart vector
 ```
 
 ### Vector API (Optional)
