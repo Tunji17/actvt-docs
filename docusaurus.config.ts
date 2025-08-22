@@ -76,7 +76,7 @@ const config: Config = {
       logo: {
         alt: 'Actvt Logo',
         src: 'img/actvt-logo.png',
-        href: '/',
+        href: 'https://actvt.io',
       },
       items: [
         {
