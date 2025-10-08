@@ -4,7 +4,16 @@
 ###############################################################################
 #
 # Description: Automated installation script for Actvt remote server monitoring
-# Usage: curl https://actvt.io/install -fsS | bash
+#
+# Required environment variables:
+#   ACTVT_DOMAIN - Your server domain name (e.g., monitor.yourdomain.com)
+#   ACTVT_EMAIL  - Email address for Let's Encrypt notifications
+#
+# Usage:
+#   export ACTVT_DOMAIN=monitor.yourdomain.com
+#   export ACTVT_EMAIL=admin@yourdomain.com
+#   curl https://actvt.io/install -fsS | bash
+#
 # Documentation: https://actvt.io/docs/remote-server/overview
 #
 # Version: 1.0.0
@@ -29,7 +38,6 @@ readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[1;33m'
 readonly BLUE='\033[0;34m'
-readonly MAGENTA='\033[0;35m'
 readonly CYAN='\033[0;36m'
 readonly NC='\033[0m' # No Color
 readonly BOLD='\033[1m'
@@ -73,7 +81,7 @@ log() {
 }
 
 progress() {
-    echo -e "${MAGENTA}  →${NC} $*"
+    echo -e "${CYAN}  →${NC} $*"
 }
 
 ###############################################################################
@@ -181,7 +189,34 @@ check_requirements() {
         error_exit "This script must be run as root or with sudo"
     fi
 
-    progress "Root access: OK"
+    # Check required environment variables
+    if [ -z "${ACTVT_DOMAIN:-}" ]; then
+        error_exit "ACTVT_DOMAIN environment variable is required. Example: export ACTVT_DOMAIN=monitor.yourdomain.com"
+    fi
+
+    if [ -z "${ACTVT_EMAIL:-}" ]; then
+        error_exit "ACTVT_EMAIL environment variable is required. Example: export ACTVT_EMAIL=admin@yourdomain.com"
+    fi
+
+    # Validate domain format (RFC 1123 compliant)
+    if ! [[ "${ACTVT_DOMAIN}" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+        error_exit "Invalid domain format. Must be a valid hostname (e.g., monitor.example.com)"
+    fi
+
+    # Validate email format (RFC 5322 basic)
+    if ! [[ "${ACTVT_EMAIL}" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+        error_exit "Invalid email format. Must be a valid email address"
+    fi
+
+    # Redact sensitive information in logs (show partial for verification)
+    progress "Domain: ${ACTVT_DOMAIN:0:3}***${ACTVT_DOMAIN: -4}"
+    progress "Email: ${ACTVT_EMAIL%%@*}@***"
+
+    # DNS Configuration Warning
+    log WARNING "IMPORTANT: DNS Configuration Required"
+    log WARNING "Your domain must have an A or CNAME record pointing to this server"
+    log WARNING "pointing to this server's IP address for Let's Encrypt to work."
+    log WARNING "Without proper DNS configuration, certificate acquisition will fail."
 
     # Check available disk space (need at least 100MB)
     local available_space=$(df /tmp | tail -1 | awk '{print $4}')
@@ -202,7 +237,6 @@ check_requirements() {
     if ! ping -c 1 -W 2 8.8.8.8 &> /dev/null; then
         error_exit "No internet connectivity detected"
     fi
-    progress "Internet connectivity: OK"
 
     # Check if required commands are available
     for cmd in curl tar; do
@@ -250,29 +284,66 @@ install_vector() {
         fi
     fi
 
+    # Vector version to install
+    readonly VECTOR_VERSION="0.50.0-1"
+
     progress "Adding Vector repository..."
 
     case "${PKG_MANAGER}" in
         apt-get)
-            # Add Vector repository for Debian/Ubuntu
-            bash -c "$(curl -L https://setup.vector.dev)" >> "${ACTVT_LOG_FILE}" 2>&1 || \
+            # Install required packages for repository management
+            progress "Installing repository dependencies..."
+            ${PKG_INSTALL} apt-transport-https gnupg ca-certificates curl >> "${ACTVT_LOG_FILE}" 2>&1
+
+            # Add Datadog GPG keys for package verification
+            progress "Adding Vector GPG keys..."
+            curl -fsSL https://keys.datadoghq.com/DATADOG_APT_KEY_CURRENT.public 2>> "${ACTVT_LOG_FILE}" | \
+                gpg --dearmor -o /usr/share/keyrings/datadog-archive-keyring.gpg 2>> "${ACTVT_LOG_FILE}" || \
+                error_exit "Failed to add Vector GPG keys"
+
+            # Add Vector repository
+            progress "Configuring Vector repository..."
+            echo "deb [signed-by=/usr/share/keyrings/datadog-archive-keyring.gpg] https://apt.vector.dev/ stable vector-0" | \
+                tee /etc/apt/sources.list.d/vector.list > /dev/null || \
                 error_exit "Failed to add Vector repository"
 
+            # Update package list
             progress "Updating package list..."
             ${PKG_UPDATE} >> "${ACTVT_LOG_FILE}" 2>&1
 
-            progress "Installing Vector package..."
-            ${PKG_INSTALL} vector >> "${ACTVT_LOG_FILE}" 2>&1 || \
+            # Install specific Vector version
+            progress "Installing Vector ${VECTOR_VERSION}..."
+            ${PKG_INSTALL} vector=${VECTOR_VERSION} >> "${ACTVT_LOG_FILE}" 2>&1 || \
                 error_exit "Failed to install Vector"
             ;;
 
         yum|dnf)
-            # Add Vector repository for RHEL/CentOS/Amazon Linux
-            bash -c "$(curl -L https://setup.vector.dev)" >> "${ACTVT_LOG_FILE}" 2>&1 || \
-                error_exit "Failed to add Vector repository"
+            # Add Datadog GPG keys
+            progress "Adding Vector GPG keys..."
+            rpm --import https://keys.datadoghq.com/DATADOG_RPM_KEY_CURRENT.public >> "${ACTVT_LOG_FILE}" 2>&1 || \
+                error_exit "Failed to import Vector GPG keys"
 
-            progress "Installing Vector package..."
-            ${PKG_INSTALL} vector >> "${ACTVT_LOG_FILE}" 2>&1 || \
+            # Add Vector repository
+            progress "Configuring Vector repository..."
+            cat > /etc/yum.repos.d/vector.repo << 'EOF'
+[vector]
+name=Vector
+baseurl=https://yum.vector.dev/stable/vector-0/$basearch/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://keys.datadoghq.com/DATADOG_RPM_KEY_CURRENT.public
+       https://keys.datadoghq.com/DATADOG_RPM_KEY_B01082D3.public
+       https://keys.datadoghq.com/DATADOG_RPM_KEY_FD4BF915.public
+EOF
+
+            if [ $? -ne 0 ]; then
+                error_exit "Failed to add Vector repository"
+            fi
+
+            # Install specific Vector version
+            progress "Installing Vector ${VECTOR_VERSION}..."
+            ${PKG_INSTALL} vector-${VECTOR_VERSION} >> "${ACTVT_LOG_FILE}" 2>&1 || \
                 error_exit "Failed to install Vector"
             ;;
     esac
@@ -286,16 +357,12 @@ install_vector() {
     progress "Vector ${vector_version} installed successfully"
 
     # Verify systemd service
-    if systemctl list-unit-files | grep -q vector.service; then
-        progress "Vector systemd service: OK"
-    else
+    if ! systemctl list-unit-files | grep -q vector.service; then
         log WARNING "Vector systemd service not found"
     fi
 
     # Verify vector user was created
-    if id vector &> /dev/null; then
-        progress "Vector user created: OK"
-    else
+    if ! id vector &> /dev/null; then
         log WARNING "Vector user not found, creating manually..."
         useradd -r -s /bin/false vector || true
     fi
@@ -307,24 +374,19 @@ install_vector() {
 #                          Vector Configuration                               #
 ###############################################################################
 
-detect_gpu() {
-    # Check if nvidia-smi is available and working
-    if command -v nvidia-smi &> /dev/null; then
-        if nvidia-smi &> /dev/null; then
-            local gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
-            log INFO "NVIDIA GPU detected: ${gpu_name}"
-            return 0
-        fi
-    fi
-    return 1
-}
-
 configure_vector() {
     log STEP "Configuring Vector"
 
-    # Detect GPU
+    # Detect GPU (inline check)
     local gpu_enabled="false"
-    if detect_gpu; then
+    local gpu_detected=false
+    if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null; then
+        local gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
+        log INFO "NVIDIA GPU detected: ${gpu_name}"
+        gpu_detected=true
+    fi
+
+    if [ "$gpu_detected" = true ]; then
         # Check environment variable first
         if [ -n "${ACTVT_ENABLE_GPU:-}" ]; then
             if [[ "${ACTVT_ENABLE_GPU}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
@@ -350,10 +412,17 @@ configure_vector() {
 
     # Backup existing configuration if it exists
     if [ -f "${VECTOR_CONFIG_DIR}/vector.toml" ]; then
-        mkdir -p "${ACTVT_BACKUP_DIR}"
-        cp "${VECTOR_CONFIG_DIR}/vector.toml" \
-           "${ACTVT_BACKUP_DIR}/vector.toml.backup.$(date +%Y%m%d_%H%M%S)"
-        progress "Existing configuration backed up"
+        # Create backup with secure temporary filename (using mktemp for security)
+        backup_file="$(mktemp -p "${ACTVT_BACKUP_DIR}" vector.toml.backup.XXXXXX)"
+        if [ $? -ne 0 ]; then
+            error_exit "Failed to create backup file"
+        fi
+
+        # Copy configuration to backup
+        cp "${VECTOR_CONFIG_DIR}/vector.toml" "$backup_file" || \
+            error_exit "Failed to backup existing configuration"
+
+        progress "Existing configuration backed up to $(basename "$backup_file")"
     fi
 
     # Create Vector configuration directory
@@ -528,27 +597,14 @@ EOF
 setup_tls() {
     log STEP "Setting up TLS Certificates"
 
-    # Prompt for domain name
-    local domain=""
-    if [ -n "${ACTVT_DOMAIN:-}" ]; then
-        domain="${ACTVT_DOMAIN}"
-        log INFO "Using domain from environment: ${domain}"
-    else
-        echo
-        echo -e "${BOLD}Enter your domain name (e.g., monitor.yourdomain.com):${NC}"
-        read -p "> " domain
-
-        if [ -z "${domain}" ]; then
-            error_exit "Domain name is required for TLS certificates"
-        fi
-    fi
-
-    progress "Domain: ${domain}"
+    # Use required domain from environment
+    local domain="${ACTVT_DOMAIN}"
+    log INFO "Using domain: ${domain:0:3}***${domain: -4}"
 
     # Verify DNS resolution
     progress "Verifying DNS resolution..."
     if ! host "${domain}" &> /dev/null; then
-        log WARNING "Domain ${domain} does not resolve. Please ensure DNS is configured correctly."
+        log WARNING "Domain does not resolve. Please ensure DNS is configured correctly."
         log WARNING "Certificate acquisition may fail if DNS is not properly configured."
 
         # Check environment variable first
@@ -569,8 +625,6 @@ setup_tls() {
                 error_exit "Please configure DNS and try again"
             fi
         fi
-    else
-        progress "DNS resolution: OK"
     fi
 
     # Install Certbot
@@ -593,19 +647,12 @@ setup_tls() {
     fi
     progress "Certbot installed successfully"
 
-    # Prompt for email
-    local email=""
-    if [ -n "${ACTVT_EMAIL:-}" ]; then
-        email="${ACTVT_EMAIL}"
-    else
-        echo
-        echo -e "${BOLD}Enter your email for Let's Encrypt notifications (optional):${NC}"
-        read -p "> " email
-    fi
+    # Use required email from environment
+    local email="${ACTVT_EMAIL}"
 
     # Check if certificate already exists
     if [ -d "/etc/letsencrypt/live/${domain}" ]; then
-        log INFO "Certificate for ${domain} already exists"
+        log INFO "Certificate for domain already exists"
 
         # Check environment variable first
         local reuse_cert="yes"
@@ -628,8 +675,7 @@ setup_tls() {
         else
             progress "Obtaining new certificate..."
             certbot certonly --standalone -d "${domain}" \
-                ${email:+--email "${email}"} \
-                --agree-tos --non-interactive --force-renewal \
+                --email "${email}" --agree-tos --non-interactive --force-renewal \
                 >> "${ACTVT_LOG_FILE}" 2>&1 || \
                 error_exit "Failed to obtain Let's Encrypt certificate"
         fi
@@ -637,33 +683,39 @@ setup_tls() {
         progress "Obtaining Let's Encrypt certificate..."
         log INFO "This requires port 80 to be temporarily accessible"
 
-        if [ -n "${email}" ]; then
-            certbot certonly --standalone -d "${domain}" \
-                --email "${email}" --agree-tos --non-interactive \
-                >> "${ACTVT_LOG_FILE}" 2>&1 || \
-                error_exit "Failed to obtain Let's Encrypt certificate. Ensure port 80 is accessible."
-        else
-            certbot certonly --standalone -d "${domain}" \
-                --register-unsafely-without-email --agree-tos --non-interactive \
-                >> "${ACTVT_LOG_FILE}" 2>&1 || \
-                error_exit "Failed to obtain Let's Encrypt certificate. Ensure port 80 is accessible."
-        fi
+        certbot certonly --standalone -d "${domain}" \
+            --email "${email}" --agree-tos --non-interactive \
+            >> "${ACTVT_LOG_FILE}" 2>&1 || \
+            error_exit "Failed to obtain Let's Encrypt certificate. Ensure port 80 is accessible."
     fi
 
-    # Create Vector certs directory
+    # Copy certificates to Vector directory with secure permissions
+    progress "Installing certificates for Vector..."
+
+    # Set restrictive umask before creating sensitive files
+    old_umask=$(umask)
+    umask 077
+
+    # Create Vector certs directory (inherits restrictive permissions)
     mkdir -p "${VECTOR_CERTS_DIR}"
 
-    # Copy certificates to Vector directory
-    progress "Installing certificates for Vector..."
+    # Copy certificates (inherit restrictive permissions from umask)
     cp "/etc/letsencrypt/live/${domain}/fullchain.pem" "${VECTOR_CERTS_DIR}/server.crt" || \
         error_exit "Failed to copy certificate"
     cp "/etc/letsencrypt/live/${domain}/privkey.pem" "${VECTOR_CERTS_DIR}/server.key" || \
         error_exit "Failed to copy private key"
 
-    # Set proper permissions
-    chown -R vector:vector "${VECTOR_CERTS_DIR}"
+    # Restore original umask
+    umask "$old_umask"
+
+    # Set explicit permissions (private key already secure from umask)
     chmod 600 "${VECTOR_CERTS_DIR}/server.key"
     chmod 644 "${VECTOR_CERTS_DIR}/server.crt"
+
+    # Set ownership on specific files (not recursive to avoid timing issues)
+    chown vector:vector "${VECTOR_CERTS_DIR}/server.crt"
+    chown vector:vector "${VECTOR_CERTS_DIR}/server.key"
+    chown vector:vector "${VECTOR_CERTS_DIR}"
 
     progress "Certificates installed successfully"
 
@@ -676,13 +728,45 @@ setup_tls() {
 
     cat > "${renewal_hook}" << 'RENEWAL_EOF'
 #!/bin/bash
-# Copy renewed certificates to Vector directory
+# Copy renewed certificates to Vector directory with secure permissions
+
+# Set restrictive umask before copying sensitive files
+old_umask=$(umask)
+umask 077
+
+# Copy certificates (inherit restrictive permissions from umask)
 cp "/etc/letsencrypt/live/${RENEWED_LINEAGE##*/}/fullchain.pem" /etc/vector/certs/server.crt
 cp "/etc/letsencrypt/live/${RENEWED_LINEAGE##*/}/privkey.pem" /etc/vector/certs/server.key
-chown -R vector:vector /etc/vector/certs
+
+# Restore original umask
+umask "$old_umask"
+
+# Set explicit permissions
 chmod 600 /etc/vector/certs/server.key
 chmod 644 /etc/vector/certs/server.crt
-systemctl reload vector || systemctl restart vector
+
+# Set ownership on specific files
+chown vector:vector /etc/vector/certs/server.crt
+chown vector:vector /etc/vector/certs/server.key
+
+# Reload or restart Vector service and verify it's running
+if systemctl reload vector 2>/dev/null; then
+    # Wait for reload to complete
+    sleep 1
+elif systemctl restart vector; then
+    # Wait for restart to complete (poll up to 30 seconds)
+    wait_count=0
+    while ! systemctl is-active --quiet vector && [ $wait_count -lt 30 ]; do
+        sleep 1
+        wait_count=$((wait_count + 1))
+    done
+fi
+
+# Verify service is running after reload/restart
+if ! systemctl is-active --quiet vector; then
+    logger -t actvt-renewal "ERROR: Vector service failed to start after certificate renewal"
+    exit 1
+fi
 RENEWAL_EOF
 
     chmod +x "${renewal_hook}"
@@ -712,7 +796,7 @@ configure_firewall() {
     if [ -n "${ACTVT_CONFIGURE_FIREWALL:-}" ]; then
         configure_fw="${ACTVT_CONFIGURE_FIREWALL}"
     elif ! is_interactive; then
-        configure_fw="no"
+        configure_fw="yes"
     fi
 
     if [[ ! "${configure_fw}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
@@ -809,7 +893,21 @@ start_vector_service() {
     if systemctl is-active --quiet vector; then
         progress "Stopping existing Vector service..."
         systemctl stop vector >> "${ACTVT_LOG_FILE}" 2>&1 || true
-        sleep 1
+
+        # Wait for service to fully stop (poll up to 30 seconds)
+        local wait_count=0
+        while systemctl is-active --quiet vector && [ $wait_count -lt 30 ]; do
+            sleep 1
+            wait_count=$((wait_count + 1))
+        done
+
+        if systemctl is-active --quiet vector; then
+            log WARNING "Service did not stop cleanly, forcing stop..."
+            systemctl kill vector >> "${ACTVT_LOG_FILE}" 2>&1 || true
+            sleep 2
+        else
+            progress "Service stopped successfully"
+        fi
     fi
 
     # Create systemd override to explicitly use our config file
@@ -832,7 +930,7 @@ OVERRIDE_EOF
     # Start service
     progress "Starting Vector with custom configuration..."
     if systemctl start vector >> "${ACTVT_LOG_FILE}" 2>&1; then
-        progress "Vector service started successfully"
+        progress "Vector service start command issued"
     else
         log ERROR "Failed to start Vector service"
         log INFO "Checking service status..."
@@ -840,21 +938,43 @@ OVERRIDE_EOF
         error_exit "Vector service failed to start. Check logs: journalctl -u vector -n 50"
     fi
 
-    # Wait a moment for service to initialize
-    sleep 3
+    # Wait for service to become active (poll up to 30 seconds)
+    progress "Waiting for Vector service to become active..."
+    local wait_count=0
+    while ! systemctl is-active --quiet vector && [ $wait_count -lt 30 ]; do
+        sleep 1
+        wait_count=$((wait_count + 1))
+    done
+
+    # Verify service is running
+    if ! systemctl is-active --quiet vector; then
+        log ERROR "Vector service did not start within 30 seconds"
+        systemctl status vector --no-pager >> "${ACTVT_LOG_FILE}" 2>&1 || true
+        error_exit "Vector service is not running"
+    fi
+
+    progress "Vector service is active"
+
+    # Give service a moment to fully initialize before checking logs
+    sleep 2
 
     # Verify it's not running demo configuration
     if journalctl -u vector -n 20 --no-pager 2>/dev/null | grep -q "BronzeGamer\|meln1ks\|We're gonna need a bigger boat"; then
         log WARNING "Vector appears to be running with demo configuration, attempting restart..."
         systemctl restart vector >> "${ACTVT_LOG_FILE}" 2>&1 || true
-        sleep 2
-    fi
 
-    # Verify service is running
-    if systemctl is-active --quiet vector; then
-        progress "Vector service is active"
-    else
-        error_exit "Vector service is not running"
+        # Wait for restart to complete (poll up to 30 seconds)
+        wait_count=0
+        while ! systemctl is-active --quiet vector && [ $wait_count -lt 30 ]; do
+            sleep 1
+            wait_count=$((wait_count + 1))
+        done
+
+        if ! systemctl is-active --quiet vector; then
+            error_exit "Vector service failed to restart"
+        fi
+
+        progress "Vector service restarted successfully"
     fi
 
     log SUCCESS "Vector service started and enabled"
@@ -951,13 +1071,28 @@ main() {
     echo -e "${NC}"
     echo
 
-    # Create state directory
+    # Validate and create state directories
+    # Validate state directory path to prevent path traversal
+    if [[ ! "${ACTVT_STATE_DIR}" =~ ^/var/lib/actvt$ ]]; then
+        echo "ERROR: Invalid state directory path: ${ACTVT_STATE_DIR}" >&2
+        exit 1
+    fi
+
+    # Validate backup directory path to prevent path traversal
+    if [[ ! "${ACTVT_BACKUP_DIR}" =~ ^/var/lib/actvt/backups$ ]]; then
+        echo "ERROR: Invalid backup directory path: ${ACTVT_BACKUP_DIR}" >&2
+        exit 1
+    fi
+
+    # Create directories with restrictive permissions
     mkdir -p "${ACTVT_STATE_DIR}"
+    chmod 700 "${ACTVT_STATE_DIR}"
     mkdir -p "${ACTVT_BACKUP_DIR}"
+    chmod 700 "${ACTVT_BACKUP_DIR}"
 
     # Initialize log file
     touch "${ACTVT_LOG_FILE}" 2>/dev/null || ACTVT_LOG_FILE="/tmp/actvt-install.log"
-    chmod 644 "${ACTVT_LOG_FILE}"
+    chmod 600 "${ACTVT_LOG_FILE}"
 
     log INFO "Starting Actvt installation (version ${SCRIPT_VERSION})"
     log INFO "Log file: ${ACTVT_LOG_FILE}"
