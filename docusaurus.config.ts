@@ -80,12 +80,6 @@ const config: Config = {
       },
       items: [
         {
-          type: 'docSidebar',
-          sidebarId: 'tutorialSidebar',
-          position: 'left',
-          label: 'Documentation',
-        },
-        {
           href: 'https://actvt.io/#download',
           label: 'Download',
           position: 'right',

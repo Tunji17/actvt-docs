@@ -45,9 +45,38 @@ Once configured, you can monitor these metrics from your remote servers:
 - GPU utilization percentage
 
 
+## Installation Options
+
+### Option 1: Automated Installation (Recommended)
+
+The fastest way to set up your remote server is using our automated installation script:
+
+```bash
+curl https://actvt.io/install -fsS | bash
+```
+
+This single command will:
+- ✅ Detect your Linux distribution automatically
+- ✅ Install Vector and all dependencies
+- ✅ Configure system metrics collection
+- ✅ Set up TLS certificates with Let's Encrypt
+- ✅ Configure firewall rules
+- ✅ Start and enable the monitoring service
+
+**Requirements:**
+- Root or sudo access
+- A domain name pointing to your server
+- Ports 80, 443, and 4096 accessible
+
+The installation takes approximately 3-5 minutes and handles all configuration automatically.
+
+### Option 2: Manual Installation
+
+For advanced users who prefer manual control, follow the step-by-step guides below.
+
 ## Setup Process
 
-Setting up remote monitoring involves several steps:
+Setting up remote monitoring manually involves several steps:
 
 ### 1. [Prerequisites](prerequisites.md)
 Verify your server meets the requirements and prepare your environment.
@@ -101,7 +130,16 @@ Solve common issues and verify your setup is working correctly.
 
 ## Quick Start Checklist
 
-For experienced users, here's the abbreviated setup process:
+### Automated Installation
+The easiest path - just run our installation script:
+
+- [ ] **Server Setup**: Ubuntu/Debian/CentOS server with public IP and root access
+- [ ] **Domain**: DNS A record pointing to server IP
+- [ ] **Run Script**: `curl https://actvt.io/install -fsS | bash`
+- [ ] **Connect**: Add server in Actvt → Settings → Remote Servers
+
+### Manual Installation
+For experienced users who prefer manual control:
 
 - [ ] **Server Setup**: Ubuntu server with public IP
 - [ ] **Domain**: DNS A record pointing to server IP
@@ -163,9 +201,14 @@ If you encounter issues during setup:
 
 Choose your setup path:
 
-🚀 **Quick Setup**: If you have an Ubuntu server ready → [Prerequisites](prerequisites.md)
+⚡ **Automated Setup**: Use the one-command installation script (recommended)
+```bash
+curl https://actvt.io/install -fsS | bash
+```
 
-☁️ **Cloud Setup**: If you need to create a server → [Provider Guides](provider-guides/overview)
+🚀 **Manual Setup**: If you prefer step-by-step control → [Prerequisites](prerequisites.md)
+
+☁️ **Cloud Setup**: If you need to create a server first → [Provider Guides](provider-guides/overview)
 
 🔧 **Troubleshooting**: If you're having issues → [Troubleshooting Guide](troubleshooting.md)
 

@@ -1,10 +1,17 @@
 ---
-sidebar_position: 4
+sidebar_position: 5
 ---
 
 # TLS Configuration for Vector
 
 Vector's WebSocket server requires TLS certificates to establish secure connections with Actvt. This guide shows you how to set up free SSL certificates using Let's Encrypt specifically for Vector's WebSocket server.
+
+:::tip Automated Installation Available
+This guide covers manual TLS setup. For automatic certificate installation, use our [automated installation script](automated-install.md):
+```bash
+curl https://actvt.io/install -fsS | bash
+```
+:::
 
 ## Prerequisites
 
