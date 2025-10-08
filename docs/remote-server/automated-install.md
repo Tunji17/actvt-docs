@@ -119,6 +119,7 @@ For automated deployments, CI/CD pipelines, or infrastructure-as-code, you can p
 | `ACTVT_ENABLE_GPU` | Enable GPU monitoring if GPU detected | `yes` | No |
 | `ACTVT_REUSE_CERT` | Reuse existing certificates | `yes` | No |
 | `ACTVT_CONTINUE_WITHOUT_DNS` | Continue if DNS resolution fails | `no` | No |
+| `ACTVT_CONFIGURE_FIREWALL` | Configure firewall rules (UFW/firewalld/iptables) | `no` (non-interactive) | No |
 | `ACTVT_NON_INTERACTIVE` | Force non-interactive mode | auto-detect | No |
 
 ### Basic Non-Interactive Installation
@@ -222,6 +223,20 @@ curl -L https://actvt.io/install | bash
 ```
 
 **Warning**: Certificate acquisition will fail without proper DNS. This is only suitable for testing.
+
+### Cloud Environments (AWS/Azure/GCP)
+
+For cloud environments where firewall is managed via Security Groups, Network Security Groups, or Cloud Firewall:
+
+```bash
+# Skip firewall configuration since it's managed by cloud provider
+export ACTVT_DOMAIN="monitor.example.com"
+export ACTVT_EMAIL="admin@example.com"
+export ACTVT_CONFIGURE_FIREWALL="no"
+curl -L https://actvt.io/install | bash
+```
+
+**Note**: Ensure your cloud security groups allow inbound traffic on ports 80, 443, and 4096.
 
 ## Installation Progress
 
