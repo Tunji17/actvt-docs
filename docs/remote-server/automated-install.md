@@ -107,18 +107,121 @@ If Vector is already installed, you can choose to skip reinstallation or update 
 
 ## Non-Interactive Installation
 
-For automated deployments or scripts, you can provide configuration via environment variables:
+For automated deployments, CI/CD pipelines, or infrastructure-as-code, you can provide all configuration via environment variables. The script will automatically run in non-interactive mode when piped from curl.
+
+### Available Environment Variables
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `ACTVT_DOMAIN` | Server domain name | - | Yes (non-interactive) |
+| `ACTVT_EMAIL` | Let's Encrypt email for renewal notifications | - | No |
+| `ACTVT_REINSTALL_VECTOR` | Reinstall Vector if already installed | `no` | No |
+| `ACTVT_ENABLE_GPU` | Enable GPU monitoring if GPU detected | `yes` | No |
+| `ACTVT_REUSE_CERT` | Reuse existing certificates | `yes` | No |
+| `ACTVT_CONTINUE_WITHOUT_DNS` | Continue if DNS resolution fails | `no` | No |
+| `ACTVT_NON_INTERACTIVE` | Force non-interactive mode | auto-detect | No |
+
+### Basic Non-Interactive Installation
+
+Minimal installation with just the required domain:
+
+```bash
+export ACTVT_DOMAIN="monitor.yourdomain.com"
+curl -L https://actvt.io/install | bash
+```
+
+Or as a one-liner:
+
+```bash
+ACTVT_DOMAIN="monitor.yourdomain.com" curl -L https://actvt.io/install | bash
+```
+
+### Complete Non-Interactive Installation
+
+Full control over all settings:
 
 ```bash
 export ACTVT_DOMAIN="monitor.yourdomain.com"
 export ACTVT_EMAIL="admin@yourdomain.com"
+export ACTVT_REINSTALL_VECTOR="no"
+export ACTVT_ENABLE_GPU="yes"
+export ACTVT_REUSE_CERT="yes"
+export ACTVT_CONTINUE_WITHOUT_DNS="no"
 curl -L https://actvt.io/install | bash
 ```
 
-### Available Environment Variables
+### CI/CD and Automation Examples
 
-- `ACTVT_DOMAIN`: Your server's domain name (required for non-interactive)
-- `ACTVT_EMAIL`: Email for Let's Encrypt notifications (optional)
+#### GitHub Actions
+
+```yaml
+- name: Install Actvt Remote Server
+  env:
+    ACTVT_DOMAIN: ${{ secrets.ACTVT_DOMAIN }}
+    ACTVT_EMAIL: ${{ secrets.ACTVT_EMAIL }}
+  run: |
+    curl -L https://actvt.io/install | sudo bash
+```
+
+#### Terraform with cloud-init
+
+```hcl
+resource "aws_instance" "monitoring" {
+  ami           = "ami-xxxxx"
+  instance_type = "t3.small"
+
+  user_data = <<-EOF
+    #!/bin/bash
+    export ACTVT_DOMAIN="monitor.example.com"
+    export ACTVT_EMAIL="admin@example.com"
+    curl -L https://actvt.io/install | bash
+  EOF
+}
+```
+
+#### Docker Build
+
+```dockerfile
+FROM ubuntu:22.04
+ENV ACTVT_DOMAIN=monitor.example.com
+ENV ACTVT_EMAIL=admin@example.com
+RUN curl -L https://actvt.io/install | bash
+```
+
+#### Ansible Playbook
+
+```yaml
+- name: Install Actvt Remote Server
+  shell: curl -L https://actvt.io/install | bash
+  environment:
+    ACTVT_DOMAIN: "{{ actvt_domain }}"
+    ACTVT_EMAIL: "{{ actvt_email }}"
+    ACTVT_REINSTALL_VECTOR: "no"
+  become: yes
+```
+
+### Force Reinstall Scenario
+
+If you want to reinstall Vector and get new certificates:
+
+```bash
+export ACTVT_DOMAIN="monitor.yourdomain.com"
+export ACTVT_REINSTALL_VECTOR="yes"
+export ACTVT_REUSE_CERT="no"
+curl -L https://actvt.io/install | bash
+```
+
+### Development/Testing Without DNS
+
+For testing environments where DNS is not configured:
+
+```bash
+export ACTVT_DOMAIN="test.internal"
+export ACTVT_CONTINUE_WITHOUT_DNS="yes"
+curl -L https://actvt.io/install | bash
+```
+
+**Warning**: Certificate acquisition will fail without proper DNS. This is only suitable for testing.
 
 ## Installation Progress
 

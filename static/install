@@ -98,6 +98,19 @@ error_exit() {
 }
 
 ###############################################################################
+#                        Interactive Mode Detection                           #
+###############################################################################
+
+is_interactive() {
+    # Check if explicitly set to non-interactive
+    if [ "${ACTVT_NON_INTERACTIVE:-}" = "yes" ]; then
+        return 1
+    fi
+    # Check if stdin is a terminal
+    [ -t 0 ]
+}
+
+###############################################################################
 #                           OS Detection                                      #
 ###############################################################################
 
@@ -214,11 +227,26 @@ install_vector() {
         local installed_version=$(vector --version | grep -oP 'vector \K[0-9.]+' || echo "unknown")
         log INFO "Vector is already installed (version ${installed_version})"
 
-        read -p "Do you want to reinstall/update Vector? [y/N] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log INFO "Skipping Vector installation"
+        # Check environment variable first
+        if [ -n "${ACTVT_REINSTALL_VECTOR:-}" ]; then
+            if [[ "${ACTVT_REINSTALL_VECTOR}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+                progress "Reinstalling Vector (ACTVT_REINSTALL_VECTOR=yes)"
+            else
+                log INFO "Skipping Vector installation (ACTVT_REINSTALL_VECTOR=${ACTVT_REINSTALL_VECTOR})"
+                return 0
+            fi
+        # In non-interactive mode, skip by default
+        elif ! is_interactive; then
+            log INFO "Skipping Vector installation (non-interactive mode)"
             return 0
+        # Interactive mode - prompt user
+        else
+            read -p "Do you want to reinstall/update Vector? [y/N] " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                log INFO "Skipping Vector installation"
+                return 0
+            fi
         fi
     fi
 
@@ -297,11 +325,26 @@ configure_vector() {
     # Detect GPU
     local gpu_enabled="false"
     if detect_gpu; then
-        read -p "Enable GPU monitoring? [Y/n] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        # Check environment variable first
+        if [ -n "${ACTVT_ENABLE_GPU:-}" ]; then
+            if [[ "${ACTVT_ENABLE_GPU}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+                gpu_enabled="true"
+                progress "GPU monitoring enabled (ACTVT_ENABLE_GPU=yes)"
+            else
+                progress "GPU monitoring disabled (ACTVT_ENABLE_GPU=${ACTVT_ENABLE_GPU})"
+            fi
+        # In non-interactive mode, enable by default if GPU detected
+        elif ! is_interactive; then
             gpu_enabled="true"
-            progress "GPU monitoring will be enabled"
+            progress "GPU monitoring enabled (non-interactive mode, GPU detected)"
+        # Interactive mode - prompt user
+        else
+            read -p "Enable GPU monitoring? [Y/n] " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                gpu_enabled="true"
+                progress "GPU monitoring will be enabled"
+            fi
         fi
     fi
 
@@ -507,10 +550,24 @@ setup_tls() {
     if ! host "${domain}" &> /dev/null; then
         log WARNING "Domain ${domain} does not resolve. Please ensure DNS is configured correctly."
         log WARNING "Certificate acquisition may fail if DNS is not properly configured."
-        read -p "Continue anyway? [y/N] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            error_exit "Please configure DNS and try again"
+
+        # Check environment variable first
+        if [ -n "${ACTVT_CONTINUE_WITHOUT_DNS:-}" ]; then
+            if [[ "${ACTVT_CONTINUE_WITHOUT_DNS}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+                log WARNING "Continuing without DNS resolution (ACTVT_CONTINUE_WITHOUT_DNS=yes)"
+            else
+                error_exit "DNS not configured (ACTVT_CONTINUE_WITHOUT_DNS=${ACTVT_CONTINUE_WITHOUT_DNS})"
+            fi
+        # In non-interactive mode, fail by default
+        elif ! is_interactive; then
+            error_exit "DNS not configured (non-interactive mode). Set ACTVT_CONTINUE_WITHOUT_DNS=yes to override"
+        # Interactive mode - prompt user
+        else
+            read -p "Continue anyway? [y/N] " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                error_exit "Please configure DNS and try again"
+            fi
         fi
     else
         progress "DNS resolution: OK"
@@ -549,9 +606,24 @@ setup_tls() {
     # Check if certificate already exists
     if [ -d "/etc/letsencrypt/live/${domain}" ]; then
         log INFO "Certificate for ${domain} already exists"
-        read -p "Reuse existing certificate? [Y/n] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+
+        # Check environment variable first
+        local reuse_cert="yes"
+        if [ -n "${ACTVT_REUSE_CERT:-}" ]; then
+            reuse_cert="${ACTVT_REUSE_CERT}"
+        # In non-interactive mode, reuse by default
+        elif ! is_interactive; then
+            reuse_cert="yes"
+        # Interactive mode - prompt user
+        else
+            read -p "Reuse existing certificate? [Y/n] " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Nn]$ ]]; then
+                reuse_cert="no"
+            fi
+        fi
+
+        if [[ "${reuse_cert}" =~ ^[Yy]([Ee][Ss])?$ ]] || [[ "${reuse_cert}" == "yes" ]]; then
             progress "Using existing certificate"
         else
             progress "Obtaining new certificate..."
