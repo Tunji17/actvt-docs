@@ -9,7 +9,7 @@ sidebar_position: 4
 :::tip Automated Installation Available
 This guide covers manual installation. For a faster setup, use our [automated installation script](automated-install.md):
 ```bash
-curl https://actvt.io/install -fsS | bash
+curl -L https://actvt.io/install | bash
 ```
 :::
 

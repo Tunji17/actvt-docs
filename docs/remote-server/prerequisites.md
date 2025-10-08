@@ -9,7 +9,7 @@ Before setting up remote server monitoring with Actvt, ensure your environment m
 :::tip Quick Setup Available
 Want to skip the manual setup? Try our [automated installation script](automated-install.md) that handles everything automatically:
 ```bash
-curl https://actvt.io/install -fsS | bash
+curl -L https://actvt.io/install | bash
 ```
 :::
 

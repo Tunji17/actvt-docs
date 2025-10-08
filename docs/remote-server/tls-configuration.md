@@ -9,7 +9,7 @@ Vector's WebSocket server requires TLS certificates to establish secure connecti
 :::tip Automated Installation Available
 This guide covers manual TLS setup. For automatic certificate installation, use our [automated installation script](automated-install.md):
 ```bash
-curl https://actvt.io/install -fsS | bash
+curl -L https://actvt.io/install | bash
 ```
 :::
 

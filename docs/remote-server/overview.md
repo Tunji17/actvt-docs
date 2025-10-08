@@ -52,7 +52,7 @@ Once configured, you can monitor these metrics from your remote servers:
 The fastest way to set up your remote server is using our automated installation script:
 
 ```bash
-curl https://actvt.io/install -fsS | bash
+curl -L https://actvt.io/install | bash
 ```
 
 This single command will:
@@ -135,7 +135,7 @@ The easiest path - just run our installation script:
 
 - [ ] **Server Setup**: Ubuntu/Debian/CentOS server with public IP and root access
 - [ ] **Domain**: DNS A record pointing to server IP
-- [ ] **Run Script**: `curl https://actvt.io/install -fsS | bash`
+- [ ] **Run Script**: `curl -L https://actvt.io/install | bash`
 - [ ] **Connect**: Add server in Actvt → Settings → Remote Servers
 
 ### Manual Installation
@@ -203,7 +203,7 @@ Choose your setup path:
 
 ⚡ **Automated Setup**: Use the one-command installation script (recommended)
 ```bash
-curl https://actvt.io/install -fsS | bash
+curl -L https://actvt.io/install | bash
 ```
 
 🚀 **Manual Setup**: If you prefer step-by-step control → [Prerequisites](prerequisites.md)

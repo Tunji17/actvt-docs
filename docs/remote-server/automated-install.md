@@ -11,7 +11,7 @@ The automated installation script is the fastest and easiest way to set up Actvt
 On your remote server, run:
 
 ```bash
-curl https://actvt.io/install -fsS | bash
+curl -L https://actvt.io/install | bash
 ```
 
 The script will guide you through the installation process, asking for your domain name and email address for Let's Encrypt certificates.
@@ -112,7 +112,7 @@ For automated deployments or scripts, you can provide configuration via environm
 ```bash
 export ACTVT_DOMAIN="monitor.yourdomain.com"
 export ACTVT_EMAIL="admin@yourdomain.com"
-curl https://actvt.io/install -fsS | bash
+curl -L https://actvt.io/install | bash
 ```
 
 ### Available Environment Variables
@@ -245,7 +245,7 @@ The script must be run as root or with sudo:
 
 ```bash
 # Use sudo if you're not root
-sudo bash -c "$(curl https://actvt.io/install -fsS)"
+sudo bash -c "$(curl -L https://actvt.io/install)"
 ```
 
 ### Certificate Acquisition Fails
@@ -300,7 +300,7 @@ The `curl | bash` pattern is commonly used but carries risks. To verify the scri
 
 ```bash
 # Download and inspect the script first
-curl https://actvt.io/install > install.sh
+curl -L https://actvt.io/install > install.sh
 less install.sh
 
 # Run it manually after inspection
