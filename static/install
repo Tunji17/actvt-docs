@@ -637,11 +637,17 @@ setup_tls() {
         progress "Obtaining Let's Encrypt certificate..."
         log INFO "This requires port 80 to be temporarily accessible"
 
-        certbot certonly --standalone -d "${domain}" \
-            ${email:+--email "${email}"} ${email:---register-unsafely-without-email} \
-            --agree-tos --non-interactive \
-            >> "${ACTVT_LOG_FILE}" 2>&1 || \
-            error_exit "Failed to obtain Let's Encrypt certificate. Ensure port 80 is accessible."
+        if [ -n "${email}" ]; then
+            certbot certonly --standalone -d "${domain}" \
+                --email "${email}" --agree-tos --non-interactive \
+                >> "${ACTVT_LOG_FILE}" 2>&1 || \
+                error_exit "Failed to obtain Let's Encrypt certificate. Ensure port 80 is accessible."
+        else
+            certbot certonly --standalone -d "${domain}" \
+                --register-unsafely-without-email --agree-tos --non-interactive \
+                >> "${ACTVT_LOG_FILE}" 2>&1 || \
+                error_exit "Failed to obtain Let's Encrypt certificate. Ensure port 80 is accessible."
+        fi
     fi
 
     # Create Vector certs directory
