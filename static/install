@@ -805,12 +805,32 @@ configure_firewall() {
 start_vector_service() {
     log STEP "Starting Vector Service"
 
+    # Stop Vector if running (to clear any demo/default config)
+    if systemctl is-active --quiet vector; then
+        progress "Stopping existing Vector service..."
+        systemctl stop vector >> "${ACTVT_LOG_FILE}" 2>&1 || true
+        sleep 1
+    fi
+
+    # Create systemd override to explicitly use our config file
+    progress "Configuring Vector service to use /etc/vector/vector.toml..."
+    mkdir -p /etc/systemd/system/vector.service.d
+    cat > /etc/systemd/system/vector.service.d/override.conf << 'OVERRIDE_EOF'
+[Service]
+ExecStart=
+ExecStart=/usr/bin/vector --config /etc/vector/vector.toml
+OVERRIDE_EOF
+
+    # Reload systemd daemon to pick up changes
+    progress "Reloading systemd daemon..."
+    systemctl daemon-reload >> "${ACTVT_LOG_FILE}" 2>&1
+
     # Enable systemd service
     progress "Enabling Vector service..."
     systemctl enable vector >> "${ACTVT_LOG_FILE}" 2>&1
 
     # Start service
-    progress "Starting Vector..."
+    progress "Starting Vector with custom configuration..."
     if systemctl start vector >> "${ACTVT_LOG_FILE}" 2>&1; then
         progress "Vector service started successfully"
     else
@@ -821,7 +841,14 @@ start_vector_service() {
     fi
 
     # Wait a moment for service to initialize
-    sleep 2
+    sleep 3
+
+    # Verify it's not running demo configuration
+    if journalctl -u vector -n 20 --no-pager 2>/dev/null | grep -q "BronzeGamer\|meln1ks\|We're gonna need a bigger boat"; then
+        log WARNING "Vector appears to be running with demo configuration, attempting restart..."
+        systemctl restart vector >> "${ACTVT_LOG_FILE}" 2>&1 || true
+        sleep 2
+    fi
 
     # Verify service is running
     if systemctl is-active --quiet vector; then
