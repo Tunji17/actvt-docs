@@ -854,29 +854,18 @@ setup_tls() {
         fi
     fi
 
-    # Create symlinks to certificates for Vector (auto-update on renewal)
+    # Install certificates for Vector by copying from Let's Encrypt
     progress "Installing certificates for Vector..."
-
-    # Create Vector certs directory with secure permissions
     mkdir -p "${VECTOR_CERTS_DIR}"
-    chmod 755 "${VECTOR_CERTS_DIR}"
-
-    # Remove old files/symlinks if they exist
-    rm -f "${VECTOR_CERTS_DIR}/server.crt" "${VECTOR_CERTS_DIR}/server.key"
-
-    # Create symlinks to live certificates (auto-updates on renewal)
-    ln -sf "/etc/letsencrypt/live/${domain}/fullchain.pem" "${VECTOR_CERTS_DIR}/server.crt" || \
-        error_exit "Failed to create certificate symlink"
-    ln -sf "/etc/letsencrypt/live/${domain}/privkey.pem" "${VECTOR_CERTS_DIR}/server.key" || \
-        error_exit "Failed to create private key symlink"
-
-    # Set ownership on symlinks and directory
-    chown -h vector:vector "${VECTOR_CERTS_DIR}/server.crt" 2>/dev/null || true
-    chown -h vector:vector "${VECTOR_CERTS_DIR}/server.key" 2>/dev/null || true
-    chown vector:vector "${VECTOR_CERTS_DIR}"
-
-    progress "Certificates symlinked (will auto-update on renewal)"
-
+    chmod 750 "${VECTOR_CERTS_DIR}"
+    if ! install -o vector -g vector -m 644 \
+        "/etc/letsencrypt/live/${domain}/fullchain.pem" "${VECTOR_CERTS_DIR}/server.crt"; then
+        error_exit "Failed to install Vector certificate"
+    fi
+    if ! install -o vector -g vector -m 640 \
+        "/etc/letsencrypt/live/${domain}/privkey.pem" "${VECTOR_CERTS_DIR}/server.key"; then
+        error_exit "Failed to install Vector private key"
+    fi
     progress "Certificates installed successfully"
 
     # Set up auto-renewal
@@ -888,51 +877,26 @@ setup_tls() {
 
     cat > "${renewal_hook}" << 'RENEWAL_EOF'
 #!/bin/bash
-# Certificate renewal hook for Actvt Vector
-# Symlinks are used, so certificates auto-update, but we need to restart services
+set -euo pipefail
 
 DOMAIN="${RENEWED_LINEAGE##*/}"
+SRC="/etc/letsencrypt/live/${DOMAIN}"
+DST="/etc/vector/certs"
 
-# Log renewal event
-logger -t actvt-renewal "Certificate renewed for ${DOMAIN}"
+logger -t actvt-renewal "Actvt: Deploying renewed certificate for ${DOMAIN}"
 
-# Verify symlinks still exist and point to correct location
-if [ ! -L /etc/vector/certs/server.crt ] || [ ! -L /etc/vector/certs/server.key ]; then
-    # Recreate symlinks if missing
-    rm -f /etc/vector/certs/server.crt /etc/vector/certs/server.key
-    ln -sf "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" /etc/vector/certs/server.crt
-    ln -sf "/etc/letsencrypt/live/${DOMAIN}/privkey.pem" /etc/vector/certs/server.key
-    chown -h vector:vector /etc/vector/certs/server.crt /etc/vector/certs/server.key
-    logger -t actvt-renewal "Recreated certificate symlinks"
-fi
+install -d -o vector -g vector -m 750 "${DST}"
+install -o vector -g vector -m 644 "${SRC}/fullchain.pem" "${DST}/server.crt"
+install -o vector -g vector -m 640 "${SRC}/privkey.pem" "${DST}/server.key"
 
-# Reload or restart Vector service
 if systemctl reload vector 2>/dev/null; then
-    logger -t actvt-renewal "Vector service reloaded successfully"
-    sleep 1
-elif systemctl restart vector; then
-    # Wait for restart to complete (poll up to 30 seconds)
-    wait_count=0
-    while ! systemctl is-active --quiet vector && [ $wait_count -lt 30 ]; do
-        sleep 1
-        wait_count=$((wait_count + 1))
-    done
-
-    if systemctl is-active --quiet vector; then
-        logger -t actvt-renewal "Vector service restarted successfully"
-    else
-        logger -t actvt-renewal "ERROR: Vector service failed to start after certificate renewal"
-        exit 1
-    fi
+  :
+else
+  systemctl restart vector || true
 fi
 
-# If nginx exists, reload it too (for proxy mode)
 if systemctl is-active --quiet nginx 2>/dev/null; then
-    if systemctl reload nginx; then
-        logger -t actvt-renewal "Nginx reloaded successfully"
-    else
-        logger -t actvt-renewal "WARNING: Failed to reload nginx"
-    fi
+  systemctl reload nginx || true
 fi
 RENEWAL_EOF
 
@@ -967,8 +931,17 @@ configure_nginx_proxy() {
     local domain="${ACTVT_DOMAIN}"
     local nginx_config="/etc/nginx/sites-available/actvt-vector"
     local nginx_enabled="/etc/nginx/sites-enabled/actvt-vector"
+    local nginx_snippet="/etc/nginx/snippets/actvt-vector-location.conf"
 
     progress "Creating nginx configuration for Vector WebSocket..."
+
+    # Detect potential conflict with existing server block for this domain
+    local conflict=false
+    if nginx -T >/dev/null 2>&1; then
+        if nginx -T 2>/dev/null | grep -E "server_name\s+${domain}(;|\s)" >/dev/null; then
+            conflict=true
+        fi
+    fi
 
     # Backup existing config if it exists
     if [ -f "$nginx_config" ]; then
@@ -977,7 +950,43 @@ configure_nginx_proxy() {
         progress "Existing nginx config backed up to $(basename \"$backup_file\")"
     fi
 
-    # Create nginx configuration for Vector proxy
+    if [ "$conflict" = true ]; then
+        mkdir -p "/etc/nginx/snippets"
+        cat > "$nginx_snippet" << NGINX_SNIPPET
+location /actvt {
+    proxy_pass https://127.0.0.1:${ACTVT_VECTOR_PORT};
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_read_timeout 86400;
+    proxy_send_timeout 86400;
+    proxy_connect_timeout 60;
+    proxy_buffering off;
+    proxy_ssl_server_name on;
+    proxy_ssl_verify off;
+}
+
+location = /actvt/health {
+    access_log off;
+    return 200 "OK\n";
+    add_header Content-Type text/plain;
+}
+NGINX_SNIPPET
+        chmod 644 "$nginx_snippet" || true
+        log WARNING "An existing nginx server block for ${domain} was detected."
+        log INFO "Created snippet at ${nginx_snippet}. Include it inside your existing server block, e.g.:"
+        echo "    include ${nginx_snippet};" | tee -a "${ACTVT_LOG_FILE}" >/dev/null
+        log INFO "Then reload nginx: systemctl reload nginx"
+        log SUCCESS "Nginx reverse proxy snippet generated"
+        log INFO "Vector WebSocket will be accessible at: wss://${domain}/actvt after you include the snippet"
+        return 0
+    fi
+
+    # Create nginx configuration for Vector proxy (dedicated server block)
     cat > "$nginx_config" << NGINX_EOF
 # Actvt Vector WebSocket Proxy Configuration
 # Generated by Actvt installation script
@@ -1018,6 +1027,10 @@ server {
 
         # Disable buffering for WebSocket
         proxy_buffering off;
+
+        # Upstream TLS options
+        proxy_ssl_server_name on;
+        proxy_ssl_verify off;
     }
 
     # Health check endpoint (optional)
