@@ -889,10 +889,12 @@ install -d -o vector -g vector -m 750 "${DST}"
 install -o vector -g vector -m 644 "${SRC}/fullchain.pem" "${DST}/server.crt"
 install -o vector -g vector -m 640 "${SRC}/privkey.pem" "${DST}/server.key"
 
-if systemctl reload vector 2>/dev/null; then
-  :
-else
-  systemctl restart vector || true
+if [ -f /etc/vector/vector.toml ]; then
+  if systemctl reload vector 2>/dev/null; then
+    :
+  else
+    systemctl restart vector || true
+  fi
 fi
 
 if systemctl is-active --quiet nginx 2>/dev/null; then
@@ -1481,8 +1483,8 @@ main() {
     detect_existing_webserver
     determine_installation_mode
     install_vector
-    configure_vector
     setup_tls
+    configure_vector
     configure_nginx_proxy
     configure_firewall
     start_vector_service

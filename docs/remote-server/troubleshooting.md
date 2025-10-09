@@ -186,7 +186,7 @@ sudo chown -R vector:vector /var/log/vector
 # Fix certificate permissions specifically
 sudo chown vector:vector /etc/vector/certs/server.*
 sudo chmod 644 /etc/vector/certs/server.crt
-sudo chmod 600 /etc/vector/certs/server.key
+sudo chmod 640 /etc/vector/certs/server.key
 ```
 
 ### Configuration Errors
@@ -353,7 +353,7 @@ ls -la /etc/vector/certs/server.*
 # Fix permissions if needed
 sudo chown vector:vector /etc/vector/certs/server.*
 sudo chmod 644 /etc/vector/certs/server.crt
-sudo chmod 600 /etc/vector/certs/server.key
+sudo chmod 640 /etc/vector/certs/server.key
 ```
 
 **Certificate expired**
@@ -366,8 +366,31 @@ openssl x509 -in /etc/vector/certs/server.crt -noout -dates
 sudo certbot renew
 
 # Copy renewed certificates to Vector directory
-sudo cp /etc/letsencrypt/live/your-domain.com/fullchain.pem /etc/vector/certs/server.crt
-sudo cp /etc/letsencrypt/live/your-domain.com/privkey.pem /etc/vector/certs/server.key
+sudo install -o vector -g vector -m 644 /etc/letsencrypt/live/your-domain.com/fullchain.pem /etc/vector/certs/server.crt
+sudo install -o vector -g vector -m 640 /etc/letsencrypt/live/your-domain.com/privkey.pem /etc/vector/certs/server.key
+
+# Reload Vector to apply new certificates (fallback to restart if reload not supported)
+sudo systemctl reload vector || sudo systemctl restart vector
+
+### Nginx server_name conflicts
+
+**Symptoms**: `nginx: [warn] conflicting server name "your-domain.com" on 0.0.0.0:443, ignored`
+
+**Cause**: Multiple server blocks listen on 443 for the same domain.
+
+**Fix**:
+1. Check where your existing server block is defined:
+```bash
+sudo nginx -T 2>/dev/null | grep -n "server_name\s\+your-domain.com"
+```
+2. Include the Actvt WebSocket snippet inside that server block:
+```nginx
+include /etc/nginx/snippets/actvt-vector-location.conf;
+```
+3. Test and reload nginx:
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
 
 # Restart Vector
 sudo systemctl restart vector

@@ -8,13 +8,17 @@ The automated installation script is the fastest and easiest way to set up Actvt
 
 ## Quick Start
 
-On your remote server, run:
+On your remote server, set the required environment variables and run the installer:
 
 ```bash
+export ACTVT_DOMAIN="monitor.yourdomain.com"
+export ACTVT_EMAIL="admin@yourdomain.com"
 curl -L https://actvt.io/install | bash
 ```
 
-The script will guide you through the installation process, asking for your domain name and email address for Let's Encrypt certificates.
+Notes:
+- ACTVT_DOMAIN and ACTVT_EMAIL are required.
+- The script auto-detects if nginx is present and will run in proxy mode behind nginx; otherwise it runs in standalone mode.
 
 ## What the Script Does
 
@@ -42,8 +46,8 @@ The automated installation script performs the following tasks:
 - Prompts for your domain name
 - Installs Certbot (Let's Encrypt client)
 - Obtains free SSL/TLS certificates
-- Configures automatic certificate renewal
-- Installs certificates for Vector
+- Installs certificates for Vector by copying them into `/etc/vector/certs` with secure ownership/permissions
+- Configures automatic certificate renewal via a Certbot deploy hook that refreshes `/etc/vector/certs` and reloads Vector
 
 ### 5. Firewall Configuration
 - Detects firewall type (UFW, firewalld, or iptables)
@@ -113,28 +117,33 @@ For automated deployments, CI/CD pipelines, or infrastructure-as-code, you can p
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `ACTVT_DOMAIN` | Server domain name | - | Yes (non-interactive) |
-| `ACTVT_EMAIL` | Let's Encrypt email for renewal notifications | - | No |
+| `ACTVT_DOMAIN` | Server domain name | - | Yes |
+| `ACTVT_EMAIL` | Let's Encrypt email for renewal notifications | - | Yes |
+| `ACTVT_INSTALL_MODE` | Installation mode: `auto` (detect), `standalone`, or `proxy` | `auto` | No |
+| `ACTVT_VECTOR_PORT` | Vector WebSocket port | `4096` | No |
+| `ACTVT_NGINX_WEBROOT` | Webroot for Certbot http-01 in proxy mode | `/var/www/html` | No |
+| `ACTVT_FORCE_STANDALONE` | Force standalone mode even if nginx is detected | `no` | No |
 | `ACTVT_REINSTALL_VECTOR` | Reinstall Vector if already installed | `no` | No |
 | `ACTVT_ENABLE_GPU` | Enable GPU monitoring if GPU detected | `yes` | No |
-| `ACTVT_REUSE_CERT` | Reuse existing certificates | `yes` | No |
+| `ACTVT_REUSE_CERT` | Reuse existing certificates if present | `yes` | No |
 | `ACTVT_CONTINUE_WITHOUT_DNS` | Continue if DNS resolution fails | `no` | No |
-| `ACTVT_CONFIGURE_FIREWALL` | Configure firewall rules (UFW/firewalld/iptables) | `no` (non-interactive) | No |
+| `ACTVT_CONFIGURE_FIREWALL` | Configure firewall rules (UFW/firewalld/iptables) | `yes` | No |
 | `ACTVT_NON_INTERACTIVE` | Force non-interactive mode | auto-detect | No |
 
 ### Basic Non-Interactive Installation
 
-Minimal installation with just the required domain:
+Minimal installation with just the required variables:
 
 ```bash
 export ACTVT_DOMAIN="monitor.yourdomain.com"
+export ACTVT_EMAIL="admin@yourdomain.com"
 curl -L https://actvt.io/install | bash
 ```
 
 Or as a one-liner:
 
 ```bash
-ACTVT_DOMAIN="monitor.yourdomain.com" curl -L https://actvt.io/install | bash
+ACTVT_DOMAIN="monitor.yourdomain.com" ACTVT_EMAIL="admin@yourdomain.com" curl -L https://actvt.io/install | bash
 ```
 
 ### Complete Non-Interactive Installation
@@ -250,46 +259,50 @@ The script shows clear progress indicators:
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
 
-[1/7] Detecting Operating System
+[1/9] Detecting Operating System
   → Detected: Ubuntu 22.04.3 LTS
   → Package manager: apt-get
   ✓ OS detection complete
 
-[2/7] Checking System Requirements
+[2/9] Checking System Requirements
   → Root access: OK
   → Disk space: OK (25GB)
   → Memory: OK (2048MB)
   → Internet connectivity: OK
   ✓ All system requirements met
 
-[3/7] Installing Vector
+[3/9] Installing Vector
   → Adding Vector repository...
   → Installing Vector package...
   → Vector 0.34.0 installed successfully
   ✓ Vector installation complete
 
-[4/7] Configuring Vector
-  → Creating Vector configuration...
-  ✓ Vector configuration complete
-
-[5/7] Setting up TLS Certificates
+[4/9] Setting up TLS Certificates
   → Domain: monitor.yourdomain.com
   → Installing Certbot...
   → Obtaining Let's Encrypt certificate...
   → Certificates installed successfully
   ✓ TLS certificates configured successfully
 
-[6/7] Configuring Firewall
+[5/9] Configuring Vector
+  → Creating Vector configuration...
+  ✓ Vector configuration complete
+
+[6/9] Configuring Nginx Reverse Proxy (proxy mode only)
+  → Created nginx server block or snippet include
+  ✓ Nginx reverse proxy configured successfully
+
+[7/9] Configuring Firewall
   → Detected firewall: ufw
   → Firewall rules added
   ✓ Firewall configuration complete
 
-[7/7] Starting Vector Service
+[8/9] Starting Vector Service
   → Enabling Vector service...
   → Starting Vector...
   ✓ Vector service started and enabled
 
-[8/7] Validating Installation
+[9/9] Validating Installation
   → Vector service: Running ✓
   → Port 4096: Listening ✓
   → TLS certificates: Valid until Mar 15 12:30:00 2025 GMT ✓
@@ -299,8 +312,9 @@ The script shows clear progress indicators:
   Installation Complete!
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-WebSocket URL:
-  wss://monitor.yourdomain.com:4096
+WebSocket URL (depends on mode):
+  • Proxy mode (nginx detected): wss://monitor.yourdomain.com/actvt
+  • Standalone mode:             wss://monitor.yourdomain.com:4096
 
 Next Steps:
   1. Open Actvt on your Mac
@@ -330,13 +344,13 @@ The script installs and configures:
 
 ### Configuration Files
 - `/etc/vector/vector.toml`: Vector configuration
-- `/etc/vector/certs/server.crt`: TLS certificate
-- `/etc/vector/certs/server.key`: TLS private key
+- `/etc/vector/certs/server.crt`: TLS certificate (copied from Let's Encrypt, 644, owned by vector)
+- `/etc/vector/certs/server.key`: TLS private key (copied from Let's Encrypt, 640, owned by vector)
 - `/etc/letsencrypt/`: Let's Encrypt configuration and certificates
 
 ### System Services
 - `vector.service`: Systemd service for Vector
-- Certificate auto-renewal (via certbot's systemd timer or cron)
+- Certificate auto-renewal via Certbot deploy hook that refreshes `/etc/vector/certs` and reloads Vector
 
 ### State Files
 - `/var/lib/actvt/install.state`: Installation state tracking
@@ -438,9 +452,37 @@ The script will NOT:
 ### TLS Certificate Security
 
 - Certificates are automatically renewed before expiration
-- Private keys have restrictive permissions (600)
-- Only the Vector service can access the certificates
-- Renewal hooks automatically restart Vector with new certificates
+- Certificates are copied into `/etc/vector/certs` with restrictive permissions
+  - server.crt: 644 vector:vector
+  - server.key: 640 vector:vector
+- A Certbot deploy hook refreshes these files on renewal and reloads Vector (and nginx if present)
+
+## Nginx Reverse Proxy and Snippet Include
+
+When nginx is already serving your domain on port 443, the installer avoids creating a conflicting server block. Instead, it creates a snippet you include in your existing server block:
+
+1) Snippet location:
+```
+/etc/nginx/snippets/actvt-vector-location.conf
+```
+
+2) Include it inside the existing server { } for your domain:
+```
+server {
+    listen 443 ssl http2;
+    server_name monitor.yourdomain.com;
+    # ... your existing config ...
+
+    include /etc/nginx/snippets/actvt-vector-location.conf;
+}
+```
+
+3) Test and reload nginx:
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+If no existing server block is found, the installer creates and enables a dedicated server block at `/etc/nginx/sites-available/actvt-vector`.
 
 ## Managing the Installation
 
@@ -539,7 +581,9 @@ After successful installation:
 
 1. **Open Actvt**: Launch the Actvt application on your Mac
 2. **Add Server**: Go to Settings → Remote Servers
-3. **Enter URL**: Use the WebSocket URL provided (e.g., `wss://monitor.yourdomain.com:4096`)
+3. **Enter URL**: Use the WebSocket URL provided
+   - Proxy mode: `wss://monitor.yourdomain.com/actvt`
+   - Standalone: `wss://monitor.yourdomain.com:4096`
 4. **Connect**: Click "Add Server" or "Connect"
 5. **Monitor**: Start viewing real-time metrics from your remote server!
 

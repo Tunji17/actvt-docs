@@ -18,12 +18,14 @@ Remote monitoring in Actvt works by:
 ## Architecture
 
 ```
-    ┌──────────────┐             ┌────────────────────────────┐
-    │  Actvt       │             │ Remote Server              │
-    │  macOS       │◄────WSS────►│  Ubuntu/Linux  ┌─────────┐ │
-    │   App        │             │   Port 4096    │ Vector  │ │
-    │              │             │                └─────────┘ │  
-    └──────────────┘             └────────────────────────────┘
+    ┌──────────────┐             ┌────────────────────────────────────┐
+    │  Actvt       │             │ Remote Server                      │
+    │  macOS       │◄────WSS────►│  Ubuntu/Linux   ┌─────────┐       │
+    │   App        │             │                 │ Vector  │       │
+    │              │             │  Modes:         └─────────┘       │
+    └──────────────┘             │  • Standalone: 0.0.0.0:4096 (WSS) │
+                                 │  • Proxy: nginx → /actvt (WSS)    │
+                                 └────────────────────────────────────┘
         │                        │                        │
         ▼                        ▼                        ▼
     Dashboard              TLS Certificate         System Metrics
@@ -66,7 +68,9 @@ This single command will:
 **Requirements:**
 - Root or sudo access
 - A domain name pointing to your server
-- Ports 80, 443, and 4096 accessible
+- Ports depend on mode:
+  - Proxy mode (nginx detected): 80 and 443 must be accessible; Vector listens on localhost
+  - Standalone: 80, 443, and 4096 must be accessible
 
 The installation takes approximately 3-5 minutes and handles all configuration automatically.
 
@@ -89,6 +93,7 @@ Set up SSL certificates for secure WebSocket connections.
 
 ### 4. Firewall Setup
 Configure firewalls based on your provider - see [Provider-Specific Guides](provider-guides/overview) for detailed firewall instructions.
+In proxy mode, do not expose port 4096 publicly; nginx proxies WSS at `/actvt` over 443.
 
 ### 5. [Provider-Specific Guides](provider-guides/overview)
 Specialized setup instructions for different cloud providers.
@@ -119,7 +124,8 @@ Solve common issues and verify your setup is working correctly.
 - Certificate validation required
 
 🔒 **Network Security**
-- Only port 4096 needs to be exposed
+- In proxy mode, only ports 80/443 are exposed; Vector listens on 127.0.0.1
+- In standalone mode, port 4096 is exposed for WSS
 - Firewall rules can restrict source IPs
 - No inbound SSH required for monitoring
 
