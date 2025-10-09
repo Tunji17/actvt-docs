@@ -12,7 +12,7 @@
 # Usage:
 #   export ACTVT_DOMAIN=monitor.yourdomain.com
 #   export ACTVT_EMAIL=admin@yourdomain.com
-#   curl https://actvt.io/install -fsS | bash
+#   curl curl -L https://actvt.io/install | bash
 #
 # Documentation: https://actvt.io/docs/remote-server/overview
 #
