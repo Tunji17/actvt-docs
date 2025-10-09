@@ -18,12 +18,14 @@ Remote monitoring in Actvt works by:
 ## Architecture
 
 ```
-    ┌──────────────┐             ┌────────────────────────────┐
-    │  Actvt       │             │ Remote Server              │
-    │  macOS       │◄────WSS────►│  Ubuntu/Linux  ┌─────────┐ │
-    │   App        │             │   Port 4096    │ Vector  │ │
-    │              │             │                └─────────┘ │  
-    └──────────────┘             └────────────────────────────┘
+    ┌──────────────┐             ┌────────────────────────────────────┐
+    │  Actvt       │             │ Remote Server                      │
+    │  macOS       │◄────WSS────►│  Ubuntu/Linux   ┌─────────┐       │
+    │   App        │             │                 │ Vector  │       │
+    │              │             │  Modes:         └─────────┘       │
+    └──────────────┘             │  • Standalone: 0.0.0.0:4096 (WSS) │
+                                 │  • Proxy: nginx → /actvt (WSS)    │
+                                 └────────────────────────────────────┘
         │                        │                        │
         ▼                        ▼                        ▼
     Dashboard              TLS Certificate         System Metrics
@@ -45,9 +47,40 @@ Once configured, you can monitor these metrics from your remote servers:
 - GPU utilization percentage
 
 
+## Installation Options
+
+### Option 1: Automated Installation (Recommended)
+
+The fastest way to set up your remote server is using our automated installation script:
+
+```bash
+curl -L https://actvt.io/install | bash
+```
+
+This single command will:
+- ✅ Detect your Linux distribution automatically
+- ✅ Install Vector and all dependencies
+- ✅ Configure system metrics collection
+- ✅ Set up TLS certificates with Let's Encrypt
+- ✅ Configure firewall rules
+- ✅ Start and enable the monitoring service
+
+**Requirements:**
+- Root or sudo access
+- A domain name pointing to your server
+- Ports depend on mode:
+  - Proxy mode (nginx detected): 80 and 443 must be accessible; Vector listens on localhost
+  - Standalone: 80, 443, and 4096 must be accessible
+
+The installation takes approximately 3-5 minutes and handles all configuration automatically.
+
+### Option 2: Manual Installation
+
+For advanced users who prefer manual control, follow the step-by-step guides below.
+
 ## Setup Process
 
-Setting up remote monitoring involves several steps:
+Setting up remote monitoring manually involves several steps:
 
 ### 1. [Prerequisites](prerequisites.md)
 Verify your server meets the requirements and prepare your environment.
@@ -60,6 +93,7 @@ Set up SSL certificates for secure WebSocket connections.
 
 ### 4. Firewall Setup
 Configure firewalls based on your provider - see [Provider-Specific Guides](provider-guides/overview) for detailed firewall instructions.
+In proxy mode, do not expose port 4096 publicly; nginx proxies WSS at `/actvt` over 443.
 
 ### 5. [Provider-Specific Guides](provider-guides/overview)
 Specialized setup instructions for different cloud providers.
@@ -90,7 +124,8 @@ Solve common issues and verify your setup is working correctly.
 - Certificate validation required
 
 🔒 **Network Security**
-- Only port 4096 needs to be exposed
+- In proxy mode, only ports 80/443 are exposed; Vector listens on 127.0.0.1
+- In standalone mode, port 4096 is exposed for WSS
 - Firewall rules can restrict source IPs
 - No inbound SSH required for monitoring
 
@@ -101,7 +136,16 @@ Solve common issues and verify your setup is working correctly.
 
 ## Quick Start Checklist
 
-For experienced users, here's the abbreviated setup process:
+### Automated Installation
+The easiest path - just run our installation script:
+
+- [ ] **Server Setup**: Ubuntu/Debian/CentOS server with public IP and root access
+- [ ] **Domain**: DNS A record pointing to server IP
+- [ ] **Run Script**: `curl -L https://actvt.io/install | bash`
+- [ ] **Connect**: Add server in Actvt → Settings → Remote Servers
+
+### Manual Installation
+For experienced users who prefer manual control:
 
 - [ ] **Server Setup**: Ubuntu server with public IP
 - [ ] **Domain**: DNS A record pointing to server IP
@@ -163,9 +207,14 @@ If you encounter issues during setup:
 
 Choose your setup path:
 
-🚀 **Quick Setup**: If you have an Ubuntu server ready → [Prerequisites](prerequisites.md)
+⚡ **Automated Setup**: Use the one-command installation script (recommended)
+```bash
+curl -L https://actvt.io/install | bash
+```
 
-☁️ **Cloud Setup**: If you need to create a server → [Provider Guides](provider-guides/overview)
+🚀 **Manual Setup**: If you prefer step-by-step control → [Prerequisites](prerequisites.md)
+
+☁️ **Cloud Setup**: If you need to create a server first → [Provider Guides](provider-guides/overview)
 
 🔧 **Troubleshooting**: If you're having issues → [Troubleshooting Guide](troubleshooting.md)
 

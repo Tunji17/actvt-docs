@@ -1,10 +1,17 @@
 ---
-sidebar_position: 4
+sidebar_position: 5
 ---
 
 # TLS Configuration for Vector
 
 Vector's WebSocket server requires TLS certificates to establish secure connections with Actvt. This guide shows you how to set up free SSL certificates using Let's Encrypt specifically for Vector's WebSocket server.
+
+:::tip Automated Installation Available
+This guide covers manual TLS setup. For automatic certificate installation, use our [automated installation script](automated-install.md):
+```bash
+curl -L https://actvt.io/install | bash
+```
+:::
 
 ## Prerequisites
 
@@ -67,10 +74,10 @@ sudo mkdir -p /etc/vector/certs
 sudo cp /etc/letsencrypt/live/monitor.yourdomain.com/fullchain.pem /etc/vector/certs/server.crt
 sudo cp /etc/letsencrypt/live/monitor.yourdomain.com/privkey.pem /etc/vector/certs/server.key
 
-# Set proper permissions
-sudo chown -R $USER:$USER /etc/vector/certs
-chmod 600 /etc/vector/certs/server.key
-chmod 644 /etc/vector/certs/server.crt
+# Set proper permissions (owned by vector user)
+sudo chown -R vector:vector /etc/vector/certs
+sudo chmod 640 /etc/vector/certs/server.key
+sudo chmod 644 /etc/vector/certs/server.crt
 
 # Verify files are in place
 ls -la /etc/vector/certs/
@@ -78,8 +85,8 @@ ls -la /etc/vector/certs/
 
 You should see:
 ```
--rw-r--r-- 1 ubuntu ubuntu 3849 Jan 15 10:30 server.crt
--rw------- 1 ubuntu ubuntu 1704 Jan 15 10:30 server.key
+-rw-r--r-- 1 vector vector 3849 Jan 15 10:30 server.crt
+-rw-r----- 1 vector vector 1704 Jan 15 10:30 server.key
 ```
 
 ## Step 4: Configure Vector for TLS
@@ -122,49 +129,28 @@ You should see:
 
 Head back to the [Vector Setup Guide](vector-setup.md) to run Vector and ensure it starts correctly with TLS enabled.
 
+echo "Certificates renewed and Vector restarted: $(date)" >> /var/log/vector/cert-renewal.log
 ## Step 6: Set Up Auto-Renewal
 
-Let's Encrypt certificates expire every 90 days. Set up automatic renewal:
+Let's Encrypt certificates expire every 90 days. We recommend using a Certbot deploy hook to copy renewed certificates and reload Vector automatically:
 
 ```bash
-# Create renewal script
-sudo nano /etc/vector/renew-certs.sh
-```
+sudo tee /etc/letsencrypt/renewal-hooks/deploy/actvt-vector.sh >/dev/null 
+#!/usr/bin/env bash
+set -euo pipefail
 
-Add this content:
+DOMAIN="${RENEWED_LINEAGE##*/}"
+SRC="/etc/letsencrypt/live/${DOMAIN}"
+DST="/etc/vector/certs"
 
-```bash
-#!/bin/bash
+install -d -o vector -g vector -m 750 "${DST}"
+install -o vector -g vector -m 644 "${SRC}/fullchain.pem" "${DST}/server.crt"
+install -o vector -g vector -m 640 "${SRC}/privkey.pem" "${DST}/server.key"
 
-# Renew certificates
-certbot renew --quiet
+systemctl reload vector 2>/dev/null || systemctl restart vector || true
+EOF
 
-# Copy renewed certificates to Vector directory
-cp /etc/letsencrypt/live/monitor.yourdomain.com/fullchain.pem /etc/vector/certs/server.crt
-cp /etc/letsencrypt/live/monitor.yourdomain.com/privkey.pem /etc/vector/certs/server.key
-
-# Set permissions
-chown -R $USER:$USER /etc/vector/certs
-chmod 600 /etc/vector/certs/server.key
-chmod 644 /etc/vector/certs/server.crt
-
-# Restart Vector to load new certificates
-sudo systemctl restart vector
-
-echo "Certificates renewed and Vector restarted: $(date)" >> /var/log/vector/cert-renewal.log
-```
-
-Make the script executable and add to crontab:
-
-```bash
-# Make script executable
-sudo chmod +x /etc/vector/renew-certs.sh
-
-# Add to crontab (runs daily at 2 AM)
-echo "0 2 * * * /etc/vector/renew-certs.sh" | sudo crontab -
-
-# Verify cron job was added
-sudo crontab -l
+sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/actvt-vector.sh
 ```
 
 ## Step 7: Test Renewal Process
@@ -194,7 +180,10 @@ openssl x509 -in /etc/vector/certs/server.crt -text -noout | grep -E "(Subject:|
 
 # Test WebSocket TLS connection (install wscat if needed)
 # npm install -g wscat
+# Standalone mode
 wscat -c wss://monitor.yourdomain.com:4096
+# Proxy mode (via nginx)
+wscat -c wss://monitor.yourdomain.com/actvt
 ```
 
 ### Check Vector Logs
@@ -241,7 +230,10 @@ sudo systemctl restart vector
 openssl x509 -in /etc/vector/certs/server.crt -noout -dates
 
 # Test WebSocket connection
+# Standalone mode
 wscat -c wss://monitor.yourdomain.com:4096
+# Proxy mode (via nginx)
+wscat -c wss://monitor.yourdomain.com/actvt
 ```
 
 ## Troubleshooting

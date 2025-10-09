@@ -5,11 +5,22 @@ import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import Layout from '@theme/Layout';
 import HomepageFeatures from '@site/src/components/HomepageFeatures';
 import Heading from '@theme/Heading';
+import { trackDownload, trackEvent } from '@site/src/utils/clarity';
 
 import styles from './index.module.css';
 
 function HomepageHeader() {
   const {siteConfig} = useDocusaurusContext();
+
+  const handleGetStartedClick = () => {
+    trackEvent('get_started_clicked');
+  };
+
+  const handleDownloadClick = () => {
+    trackDownload(); // Will attempt to detect platform from user agent
+    trackEvent('download_button_clicked');
+  };
+
   return (
     <header className={clsx('hero hero--primary', styles.heroBanner)}>
       <div className="container">
@@ -20,12 +31,14 @@ function HomepageHeader() {
         <div className={styles.buttons}>
           <Link
             className="button button--secondary button--lg"
-            to="/">
+            to="/"
+            onClick={handleGetStartedClick}>
             Get Started 🚀
           </Link>
           <Link
             className="button button--primary button--lg"
-            to="https://actvt.io/#download">
+            to="https://actvt.io/#download"
+            onClick={handleDownloadClick}>
             Download Actvt
           </Link>
         </div>

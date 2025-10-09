@@ -70,6 +70,7 @@ const config: Config = {
   themeConfig: {
     // Replace with your project's social card
     image: 'img/actvt-social-card.png',
+    clarityProjectId: process.env.CLARITY_PROJECT_ID || 'tne1zlthk7', // Microsoft Clarity Project ID
     metadata: [{name: 'keywords', content: 'macOS monitoring, system monitoring, CPU monitoring, GPU monitoring, remote server monitoring, real-time monitoring, macOS menu bar app, Apple Silicon'}],
     navbar: {
       title: 'Actvt',
@@ -79,12 +80,6 @@ const config: Config = {
         href: 'https://actvt.io',
       },
       items: [
-        {
-          type: 'docSidebar',
-          sidebarId: 'tutorialSidebar',
-          position: 'left',
-          label: 'Documentation',
-        },
         {
           href: 'https://actvt.io/#download',
           label: 'Download',

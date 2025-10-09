@@ -1,10 +1,18 @@
 ---
-sidebar_position: 2
+sidebar_position: 3
 ---
 
 # Prerequisites
 
 Before setting up remote server monitoring with Actvt, ensure your environment meets these requirements.
+
+:::tip Quick Setup Available
+Want to skip the manual setup? Try our [automated installation script](automated-install.md) that handles everything automatically:
+```bash
+curl -L https://actvt.io/install | bash
+```
+:::
+
 
 ## Server Requirements
 

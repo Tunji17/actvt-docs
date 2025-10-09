@@ -1,10 +1,18 @@
 ---
-sidebar_position: 3
+sidebar_position: 4
 ---
 
 # Vector Setup Guide
 
 [Vector](https://vector.dev/docs/) is a high-performance observability data pipeline that collects, transforms, and routes system metrics. This guide walks through installing and configuring Vector for Actvt remote monitoring.
+
+:::tip Automated Installation Available
+This guide covers manual installation. For a faster setup, use our [automated installation script](automated-install.md):
+```bash
+curl -L https://actvt.io/install | bash
+```
+:::
+
 
 ## What is Vector?
 
