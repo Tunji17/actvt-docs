@@ -9,10 +9,28 @@
 #   ACTVT_DOMAIN - Your server domain name (e.g., monitor.yourdomain.com)
 #   ACTVT_EMAIL  - Email address for Let's Encrypt notifications
 #
-# Usage:
+# Optional environment variables:
+#   ACTVT_INSTALL_MODE       - Installation mode: auto|standalone|proxy (default: auto)
+#   ACTVT_VECTOR_PORT        - Port for Vector WebSocket server (default: 4096)
+#   ACTVT_NGINX_WEBROOT      - Nginx webroot for certificate validation (default: /var/www/html)
+#   ACTVT_FORCE_STANDALONE   - Force standalone mode even if web server detected (default: no)
+#   ACTVT_CONFIGURE_FIREWALL - Configure firewall rules (default: yes)
+#
+# Installation Modes:
+#   - auto: Automatically detect existing web server and choose appropriate mode
+#   - standalone: Fresh server installation (Vector exposed on port 4096)
+#   - proxy: Install behind existing nginx (Vector on localhost, nginx proxies /actvt path)
+#
+# Usage (basic):
 #   export ACTVT_DOMAIN=monitor.yourdomain.com
 #   export ACTVT_EMAIL=admin@yourdomain.com
-#   curl curl -L https://actvt.io/install | bash
+#   curl -L https://actvt.io/install | bash
+#
+# Usage (with nginx reverse proxy):
+#   export ACTVT_DOMAIN=monitor.yourdomain.com
+#   export ACTVT_EMAIL=admin@yourdomain.com
+#   export ACTVT_INSTALL_MODE=proxy
+#   curl -L https://actvt.io/install | bash
 #
 # Documentation: https://actvt.io/docs/remote-server/overview
 #
@@ -25,6 +43,20 @@ set -euo pipefail
 
 # Script version
 readonly SCRIPT_VERSION="1.0.0"
+
+# Installation mode configuration
+# ACTVT_INSTALL_MODE:
+#   - "auto" (default): Detect and choose appropriate mode
+#   - "standalone": Dedicated server, ports 80/443/4096 exposed directly
+#   - "proxy": Behind existing nginx, localhost-only binding
+readonly ACTVT_INSTALL_MODE="${ACTVT_INSTALL_MODE:-auto}"
+readonly ACTVT_VECTOR_PORT="${ACTVT_VECTOR_PORT:-4096}"
+readonly ACTVT_NGINX_WEBROOT="${ACTVT_NGINX_WEBROOT:-/var/www/html}"
+readonly ACTVT_FORCE_STANDALONE="${ACTVT_FORCE_STANDALONE:-no}"
+
+# Global variables for detected state
+EXISTING_WEBSERVER=""
+SELECTED_MODE=""
 
 # Installation directories
 readonly ACTVT_STATE_DIR="/var/lib/actvt"
@@ -44,7 +76,7 @@ readonly BOLD='\033[1m'
 
 # Progress tracking
 CURRENT_STEP=0
-TOTAL_STEPS=7
+TOTAL_STEPS=9
 
 ###############################################################################
 #                           Logging Functions                                 #
@@ -557,11 +589,24 @@ EOF
         echo 'inputs  = ["format_metrics"]' >> "${VECTOR_CONFIG_DIR}/vector.toml"
     fi
 
-    cat >> "${VECTOR_CONFIG_DIR}/vector.toml" << 'EOF'
-address = "0.0.0.0:4096"
+    # Set bind address based on installation mode
+    # In proxy mode, bind to localhost only; in standalone, bind to all interfaces
+    local bind_address="0.0.0.0:${ACTVT_VECTOR_PORT}"
+    if [ "$SELECTED_MODE" = "proxy" ]; then
+        bind_address="127.0.0.1:${ACTVT_VECTOR_PORT}"
+        progress "Vector will bind to localhost only (proxy mode)"
+    else
+        progress "Vector will bind to all interfaces (standalone mode)"
+    fi
+
+    cat >> "${VECTOR_CONFIG_DIR}/vector.toml" << EOF
+address = "${bind_address}"
 
 encoding.codec            = "json"
 encoding.timestamp_format = "rfc3339"
+EOF
+
+    cat >> "${VECTOR_CONFIG_DIR}/vector.toml" << 'EOF'
 
 [sinks.websocket_out.tls]
 enabled  = true
@@ -588,6 +633,88 @@ EOF
     fi
 
     log SUCCESS "Vector configuration complete"
+}
+
+###############################################################################
+#                        Web Server Detection                                 #
+###############################################################################
+
+detect_existing_webserver() {
+    log INFO "Checking for existing web server..."
+
+    # Check if ports 80 or 443 are in use
+    local port_80_in_use=false
+    local port_443_in_use=false
+
+    # Try lsof first, fallback to ss
+    if command -v lsof &> /dev/null; then
+        if lsof -ti:80 &> /dev/null; then
+            port_80_in_use=true
+        fi
+        if lsof -ti:443 &> /dev/null; then
+            port_443_in_use=true
+        fi
+    elif command -v ss &> /dev/null; then
+        if ss -tlnp 2>/dev/null | grep -q ':80 '; then
+            port_80_in_use=true
+        fi
+        if ss -tlnp 2>/dev/null | grep -q ':443 '; then
+            port_443_in_use=true
+        fi
+    fi
+
+    # Detect which web server is running
+    if [ "$port_80_in_use" = true ] || [ "$port_443_in_use" = true ]; then
+        if systemctl is-active --quiet nginx 2>/dev/null || pgrep nginx &> /dev/null; then
+            EXISTING_WEBSERVER="nginx"
+            progress "Nginx detected on port 80/443"
+            return 0
+        elif systemctl is-active --quiet apache2 2>/dev/null || pgrep apache2 &> /dev/null; then
+            EXISTING_WEBSERVER="apache"
+            progress "Apache detected on port 80/443"
+            return 0
+        elif systemctl is-active --quiet httpd 2>/dev/null || pgrep httpd &> /dev/null; then
+            EXISTING_WEBSERVER="httpd"
+            progress "Apache/httpd detected on port 80/443"
+            return 0
+        else
+            EXISTING_WEBSERVER="unknown"
+            log WARNING "Unknown service using port 80/443"
+            return 0
+        fi
+    fi
+
+    progress "No existing web server detected"
+    return 0
+}
+
+determine_installation_mode() {
+    log INFO "Determining installation mode..."
+
+    # Force standalone mode if requested
+    if [[ "${ACTVT_FORCE_STANDALONE}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        SELECTED_MODE="standalone"
+        log INFO "Installation mode: standalone (forced via ACTVT_FORCE_STANDALONE)"
+        return 0
+    fi
+
+    # Use explicit mode if provided
+    if [ "${ACTVT_INSTALL_MODE}" != "auto" ]; then
+        SELECTED_MODE="${ACTVT_INSTALL_MODE}"
+        log INFO "Installation mode: ${SELECTED_MODE} (explicitly set)"
+        return 0
+    fi
+
+    # Auto-detect based on existing web server
+    if [ -n "$EXISTING_WEBSERVER" ] && [ "$EXISTING_WEBSERVER" != "unknown" ]; then
+        SELECTED_MODE="proxy"
+        log INFO "Installation mode: proxy (detected ${EXISTING_WEBSERVER})"
+    else
+        SELECTED_MODE="standalone"
+        log INFO "Installation mode: standalone (no web server detected)"
+    fi
+
+    return 0
 }
 
 ###############################################################################
@@ -681,41 +808,74 @@ setup_tls() {
         fi
     else
         progress "Obtaining Let's Encrypt certificate..."
-        log INFO "This requires port 80 to be temporarily accessible"
 
-        certbot certonly --standalone -d "${domain}" \
-            --email "${email}" --agree-tos --non-interactive \
-            >> "${ACTVT_LOG_FILE}" 2>&1 || \
-            error_exit "Failed to obtain Let's Encrypt certificate. Ensure port 80 is accessible."
+        # Choose certbot mode based on existing web server
+        if [ "$SELECTED_MODE" = "proxy" ] && [ "$EXISTING_WEBSERVER" = "nginx" ]; then
+            progress "Using webroot mode (nginx detected)..."
+
+            # Ensure webroot directory exists
+            mkdir -p "${ACTVT_NGINX_WEBROOT}/.well-known/acme-challenge"
+
+            # Set proper permissions for webroot
+            if id www-data &> /dev/null; then
+                chown -R www-data:www-data "${ACTVT_NGINX_WEBROOT}/.well-known" 2>/dev/null || true
+            elif id nginx &> /dev/null; then
+                chown -R nginx:nginx "${ACTVT_NGINX_WEBROOT}/.well-known" 2>/dev/null || true
+            fi
+
+            log INFO "Using webroot: ${ACTVT_NGINX_WEBROOT}"
+            log INFO "Ensure nginx is configured to serve .well-known/acme-challenge"
+
+            certbot certonly --webroot -w "${ACTVT_NGINX_WEBROOT}" -d "${domain}" \
+                --email "${email}" --agree-tos --non-interactive \
+                >> "${ACTVT_LOG_FILE}" 2>&1 || \
+                error_exit "Failed to obtain certificate via webroot. Ensure nginx serves ${ACTVT_NGINX_WEBROOT}/.well-known"
+
+        elif [ "$SELECTED_MODE" = "proxy" ] && [ -n "$EXISTING_WEBSERVER" ]; then
+            log WARNING "Detected ${EXISTING_WEBSERVER} on port 80/443"
+            log WARNING "To obtain certificates, you have two options:"
+            log WARNING "1. Temporarily stop ${EXISTING_WEBSERVER}:"
+            log WARNING "   sudo systemctl stop ${EXISTING_WEBSERVER}"
+            log WARNING "   Then run this script again"
+            log WARNING "   sudo systemctl start ${EXISTING_WEBSERVER}"
+            log WARNING ""
+            log WARNING "2. Use webroot mode manually:"
+            log WARNING "   Set ACTVT_NGINX_WEBROOT to your web server's document root"
+            error_exit "Cannot obtain certificate automatically with ${EXISTING_WEBSERVER} running on port 80"
+
+        else
+            # Standalone mode (default behavior)
+            log INFO "Using standalone mode (requires port 80 to be temporarily accessible)"
+
+            certbot certonly --standalone -d "${domain}" \
+                --email "${email}" --agree-tos --non-interactive \
+                >> "${ACTVT_LOG_FILE}" 2>&1 || \
+                error_exit "Failed to obtain Let's Encrypt certificate. Ensure port 80 is accessible and not in use."
+        fi
     fi
 
-    # Copy certificates to Vector directory with secure permissions
+    # Create symlinks to certificates for Vector (auto-update on renewal)
     progress "Installing certificates for Vector..."
 
-    # Set restrictive umask before creating sensitive files
-    old_umask=$(umask)
-    umask 077
-
-    # Create Vector certs directory (inherits restrictive permissions)
+    # Create Vector certs directory with secure permissions
     mkdir -p "${VECTOR_CERTS_DIR}"
+    chmod 755 "${VECTOR_CERTS_DIR}"
 
-    # Copy certificates (inherit restrictive permissions from umask)
-    cp "/etc/letsencrypt/live/${domain}/fullchain.pem" "${VECTOR_CERTS_DIR}/server.crt" || \
-        error_exit "Failed to copy certificate"
-    cp "/etc/letsencrypt/live/${domain}/privkey.pem" "${VECTOR_CERTS_DIR}/server.key" || \
-        error_exit "Failed to copy private key"
+    # Remove old files/symlinks if they exist
+    rm -f "${VECTOR_CERTS_DIR}/server.crt" "${VECTOR_CERTS_DIR}/server.key"
 
-    # Restore original umask
-    umask "$old_umask"
+    # Create symlinks to live certificates (auto-updates on renewal)
+    ln -sf "/etc/letsencrypt/live/${domain}/fullchain.pem" "${VECTOR_CERTS_DIR}/server.crt" || \
+        error_exit "Failed to create certificate symlink"
+    ln -sf "/etc/letsencrypt/live/${domain}/privkey.pem" "${VECTOR_CERTS_DIR}/server.key" || \
+        error_exit "Failed to create private key symlink"
 
-    # Set explicit permissions (private key already secure from umask)
-    chmod 600 "${VECTOR_CERTS_DIR}/server.key"
-    chmod 644 "${VECTOR_CERTS_DIR}/server.crt"
-
-    # Set ownership on specific files (not recursive to avoid timing issues)
-    chown vector:vector "${VECTOR_CERTS_DIR}/server.crt"
-    chown vector:vector "${VECTOR_CERTS_DIR}/server.key"
+    # Set ownership on symlinks and directory
+    chown -h vector:vector "${VECTOR_CERTS_DIR}/server.crt" 2>/dev/null || true
+    chown -h vector:vector "${VECTOR_CERTS_DIR}/server.key" 2>/dev/null || true
     chown vector:vector "${VECTOR_CERTS_DIR}"
+
+    progress "Certificates symlinked (will auto-update on renewal)"
 
     progress "Certificates installed successfully"
 
@@ -728,30 +888,27 @@ setup_tls() {
 
     cat > "${renewal_hook}" << 'RENEWAL_EOF'
 #!/bin/bash
-# Copy renewed certificates to Vector directory with secure permissions
+# Certificate renewal hook for Actvt Vector
+# Symlinks are used, so certificates auto-update, but we need to restart services
 
-# Set restrictive umask before copying sensitive files
-old_umask=$(umask)
-umask 077
+DOMAIN="${RENEWED_LINEAGE##*/}"
 
-# Copy certificates (inherit restrictive permissions from umask)
-cp "/etc/letsencrypt/live/${RENEWED_LINEAGE##*/}/fullchain.pem" /etc/vector/certs/server.crt
-cp "/etc/letsencrypt/live/${RENEWED_LINEAGE##*/}/privkey.pem" /etc/vector/certs/server.key
+# Log renewal event
+logger -t actvt-renewal "Certificate renewed for ${DOMAIN}"
 
-# Restore original umask
-umask "$old_umask"
+# Verify symlinks still exist and point to correct location
+if [ ! -L /etc/vector/certs/server.crt ] || [ ! -L /etc/vector/certs/server.key ]; then
+    # Recreate symlinks if missing
+    rm -f /etc/vector/certs/server.crt /etc/vector/certs/server.key
+    ln -sf "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" /etc/vector/certs/server.crt
+    ln -sf "/etc/letsencrypt/live/${DOMAIN}/privkey.pem" /etc/vector/certs/server.key
+    chown -h vector:vector /etc/vector/certs/server.crt /etc/vector/certs/server.key
+    logger -t actvt-renewal "Recreated certificate symlinks"
+fi
 
-# Set explicit permissions
-chmod 600 /etc/vector/certs/server.key
-chmod 644 /etc/vector/certs/server.crt
-
-# Set ownership on specific files
-chown vector:vector /etc/vector/certs/server.crt
-chown vector:vector /etc/vector/certs/server.key
-
-# Reload or restart Vector service and verify it's running
+# Reload or restart Vector service
 if systemctl reload vector 2>/dev/null; then
-    # Wait for reload to complete
+    logger -t actvt-renewal "Vector service reloaded successfully"
     sleep 1
 elif systemctl restart vector; then
     # Wait for restart to complete (poll up to 30 seconds)
@@ -760,12 +917,22 @@ elif systemctl restart vector; then
         sleep 1
         wait_count=$((wait_count + 1))
     done
+
+    if systemctl is-active --quiet vector; then
+        logger -t actvt-renewal "Vector service restarted successfully"
+    else
+        logger -t actvt-renewal "ERROR: Vector service failed to start after certificate renewal"
+        exit 1
+    fi
 fi
 
-# Verify service is running after reload/restart
-if ! systemctl is-active --quiet vector; then
-    logger -t actvt-renewal "ERROR: Vector service failed to start after certificate renewal"
-    exit 1
+# If nginx exists, reload it too (for proxy mode)
+if systemctl is-active --quiet nginx 2>/dev/null; then
+    if systemctl reload nginx; then
+        logger -t actvt-renewal "Nginx reloaded successfully"
+    else
+        logger -t actvt-renewal "WARNING: Failed to reload nginx"
+    fi
 fi
 RENEWAL_EOF
 
@@ -782,6 +949,116 @@ RENEWAL_EOF
     echo "${domain}" > "${ACTVT_STATE_DIR}/domain"
 
     log SUCCESS "TLS certificates configured successfully"
+}
+
+###############################################################################
+#                       Nginx Reverse Proxy Configuration                     #
+###############################################################################
+
+configure_nginx_proxy() {
+    log STEP "Configuring Nginx Reverse Proxy"
+
+    # Only run in proxy mode with nginx
+    if [ "$SELECTED_MODE" != "proxy" ] || [ "$EXISTING_WEBSERVER" != "nginx" ]; then
+        log INFO "Skipping nginx configuration (not in proxy mode with nginx)"
+        return 0
+    fi
+
+    local domain="${ACTVT_DOMAIN}"
+    local nginx_config="/etc/nginx/sites-available/actvt-vector"
+    local nginx_enabled="/etc/nginx/sites-enabled/actvt-vector"
+
+    progress "Creating nginx configuration for Vector WebSocket..."
+
+    # Backup existing config if it exists
+    if [ -f "$nginx_config" ]; then
+        backup_file="$(mktemp -p \"${ACTVT_BACKUP_DIR}\" actvt-vector.nginx.backup.XXXXXX)"
+        cp "$nginx_config" "$backup_file" || true
+        progress "Existing nginx config backed up to $(basename \"$backup_file\")"
+    fi
+
+    # Create nginx configuration for Vector proxy
+    cat > "$nginx_config" << NGINX_EOF
+# Actvt Vector WebSocket Proxy Configuration
+# Generated by Actvt installation script
+
+server {
+    listen 443 ssl http2;
+    server_name ${domain};
+
+    # SSL certificates managed by certbot
+    ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
+
+    # SSL configuration
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384';
+
+    # Actvt Vector WebSocket endpoint
+    location /actvt {
+        # Proxy to local Vector WebSocket server
+        proxy_pass https://127.0.0.1:${ACTVT_VECTOR_PORT};
+
+        # WebSocket support
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Proxy headers
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+
+        # WebSocket timeouts (24 hours)
+        proxy_read_timeout 86400;
+        proxy_send_timeout 86400;
+        proxy_connect_timeout 60;
+
+        # Disable buffering for WebSocket
+        proxy_buffering off;
+    }
+
+    # Health check endpoint (optional)
+    location /actvt/health {
+        access_log off;
+        return 200 "OK\n";
+        add_header Content-Type text/plain;
+    }
+}
+NGINX_EOF
+
+    progress "Nginx configuration created at $nginx_config"
+
+    # Enable the site
+    if [ -d "/etc/nginx/sites-enabled" ]; then
+        ln -sf "$nginx_config" "$nginx_enabled"
+        progress "Nginx site enabled"
+    else
+        log WARNING "sites-enabled directory not found. Include $nginx_config in your nginx config manually."
+    fi
+
+    # Test nginx configuration
+    progress "Testing nginx configuration..."
+    if nginx -t >> "${ACTVT_LOG_FILE}" 2>&1; then
+        progress "Nginx configuration is valid"
+
+        # Reload nginx
+        progress "Reloading nginx..."
+        if systemctl reload nginx >> "${ACTVT_LOG_FILE}" 2>&1; then
+            progress "Nginx reloaded successfully"
+        else
+            log WARNING "Failed to reload nginx. You may need to reload it manually."
+        fi
+    else
+        log ERROR "Nginx configuration test failed"
+        log ERROR "Please check $nginx_config and fix any errors"
+        error_exit "Nginx configuration is invalid"
+    fi
+
+    log SUCCESS "Nginx reverse proxy configured successfully"
+    log INFO "Vector WebSocket accessible at: wss://${domain}/actvt"
 }
 
 ###############################################################################
@@ -833,12 +1110,39 @@ configure_firewall() {
                 ufw --force enable >> "${ACTVT_LOG_FILE}" 2>&1
             fi
 
-            # Allow required ports
-            ufw allow 80/tcp >> "${ACTVT_LOG_FILE}" 2>&1
-            ufw allow 443/tcp >> "${ACTVT_LOG_FILE}" 2>&1
-            ufw allow 4096/tcp >> "${ACTVT_LOG_FILE}" 2>&1
+            # Check which ports are already open
+            local port_80_open=false
+            local port_443_open=false
+            local port_vector_open=false
 
-            progress "Firewall rules added"
+            if ufw status | grep -qE "^80/tcp.*ALLOW"; then
+                port_80_open=true
+            fi
+            if ufw status | grep -qE "^443/tcp.*ALLOW"; then
+                port_443_open=true
+            fi
+            if ufw status | grep -qE "^${ACTVT_VECTOR_PORT}/tcp.*ALLOW"; then
+                port_vector_open=true
+            fi
+
+            # In proxy mode, ports 80/443 are likely already open
+            if [ "$SELECTED_MODE" = "proxy" ]; then
+                if [ "$port_80_open" = true ] && [ "$port_443_open" = true ]; then
+                    progress "Ports 80 and 443 already open (existing web server)"
+                else
+                    [ "$port_80_open" = false ] && ufw allow 80/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port 80"
+                    [ "$port_443_open" = false ] && ufw allow 443/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port 443"
+                fi
+                # In proxy mode, Vector port doesn't need to be exposed
+                progress "Skipping port ${ACTVT_VECTOR_PORT} (proxy mode - localhost only)"
+            else
+                # Standalone mode - open all ports
+                [ "$port_80_open" = false ] && ufw allow 80/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port 80"
+                [ "$port_443_open" = false ] && ufw allow 443/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port 443"
+                [ "$port_vector_open" = false ] && ufw allow ${ACTVT_VECTOR_PORT}/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port ${ACTVT_VECTOR_PORT}"
+            fi
+
+            progress "Firewall rules configured"
             ;;
 
         firewalld)
@@ -849,33 +1153,82 @@ configure_firewall() {
                 systemctl start firewalld
             fi
 
-            # Allow required ports
-            firewall-cmd --permanent --add-port=80/tcp >> "${ACTVT_LOG_FILE}" 2>&1
-            firewall-cmd --permanent --add-port=443/tcp >> "${ACTVT_LOG_FILE}" 2>&1
-            firewall-cmd --permanent --add-port=4096/tcp >> "${ACTVT_LOG_FILE}" 2>&1
-            firewall-cmd --reload >> "${ACTVT_LOG_FILE}" 2>&1
+            # Check which ports are already open
+            local port_80_open=false
+            local port_443_open=false
+            local port_vector_open=false
 
-            progress "Firewall rules added"
+            if firewall-cmd --list-ports 2>/dev/null | grep -q "80/tcp"; then
+                port_80_open=true
+            fi
+            if firewall-cmd --list-ports 2>/dev/null | grep -q "443/tcp"; then
+                port_443_open=true
+            fi
+            if firewall-cmd --list-ports 2>/dev/null | grep -q "${ACTVT_VECTOR_PORT}/tcp"; then
+                port_vector_open=true
+            fi
+
+            # In proxy mode, ports 80/443 are likely already open
+            if [ "$SELECTED_MODE" = "proxy" ]; then
+                if [ "$port_80_open" = true ] && [ "$port_443_open" = true ]; then
+                    progress "Ports 80 and 443 already open (existing web server)"
+                else
+                    [ "$port_80_open" = false ] && firewall-cmd --permanent --add-port=80/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port 80"
+                    [ "$port_443_open" = false ] && firewall-cmd --permanent --add-port=443/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port 443"
+                fi
+                # In proxy mode, Vector port doesn't need to be exposed
+                progress "Skipping port ${ACTVT_VECTOR_PORT} (proxy mode - localhost only)"
+            else
+                # Standalone mode - open all ports
+                [ "$port_80_open" = false ] && firewall-cmd --permanent --add-port=80/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port 80"
+                [ "$port_443_open" = false ] && firewall-cmd --permanent --add-port=443/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port 443"
+                [ "$port_vector_open" = false ] && firewall-cmd --permanent --add-port=${ACTVT_VECTOR_PORT}/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port ${ACTVT_VECTOR_PORT}"
+            fi
+
+            firewall-cmd --reload >> "${ACTVT_LOG_FILE}" 2>&1
+            progress "Firewall rules configured"
             ;;
 
         iptables)
             progress "Configuring iptables..."
 
-            # Add rules if they don't exist
-            iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || \
-                iptables -I INPUT -p tcp --dport 80 -j ACCEPT
-            iptables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || \
-                iptables -I INPUT -p tcp --dport 443 -j ACCEPT
-            iptables -C INPUT -p tcp --dport 4096 -j ACCEPT 2>/dev/null || \
-                iptables -I INPUT -p tcp --dport 4096 -j ACCEPT
+            # In proxy mode, ports 80/443 are likely already open
+            if [ "$SELECTED_MODE" = "proxy" ]; then
+                # Check if rules already exist before adding
+                if ! iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null; then
+                    iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+                    progress "Opened port 80"
+                else
+                    progress "Port 80 already open"
+                fi
+
+                if ! iptables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null; then
+                    iptables -I INPUT -p tcp --dport 443 -j ACCEPT
+                    progress "Opened port 443"
+                else
+                    progress "Port 443 already open"
+                fi
+
+                # In proxy mode, Vector port doesn't need to be exposed
+                progress "Skipping port ${ACTVT_VECTOR_PORT} (proxy mode - localhost only)"
+            else
+                # Standalone mode - add all rules if they don't exist
+                iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || \
+                    iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+                iptables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || \
+                    iptables -I INPUT -p tcp --dport 443 -j ACCEPT
+                iptables -C INPUT -p tcp --dport ${ACTVT_VECTOR_PORT} -j ACCEPT 2>/dev/null || \
+                    iptables -I INPUT -p tcp --dport ${ACTVT_VECTOR_PORT} -j ACCEPT
+            fi
 
             # Try to save rules
             if command -v iptables-save &> /dev/null; then
+                mkdir -p /etc/iptables 2>/dev/null || true
                 iptables-save > /etc/iptables/rules.v4 2>/dev/null || \
                     log WARNING "Could not persist iptables rules. They may not survive reboot."
             fi
 
-            progress "Firewall rules added"
+            progress "Firewall rules configured"
             ;;
     esac
 
@@ -1029,11 +1382,23 @@ validate_installation() {
     echo -e "${GREEN}${BOLD}  Installation Complete!${NC}"
     echo -e "${GREEN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo
+    echo -e "${BOLD}Installation Mode:${NC} ${SELECTED_MODE}"
+    echo
     echo -e "${BOLD}WebSocket URL:${NC}"
     if [ -n "${domain}" ]; then
-        echo -e "  ${CYAN}wss://${domain}:4096${NC}"
+        if [ "$SELECTED_MODE" = "proxy" ]; then
+            echo -e "  ${CYAN}wss://${domain}/actvt${NC}"
+            echo -e "  ${BOLD}(via nginx reverse proxy)${NC}"
+        else
+            echo -e "  ${CYAN}wss://${domain}:${ACTVT_VECTOR_PORT}${NC}"
+            echo -e "  ${BOLD}(direct connection)${NC}"
+        fi
     else
-        echo -e "  ${CYAN}wss://YOUR_DOMAIN:4096${NC}"
+        if [ "$SELECTED_MODE" = "proxy" ]; then
+            echo -e "  ${CYAN}wss://YOUR_DOMAIN/actvt${NC}"
+        else
+            echo -e "  ${CYAN}wss://YOUR_DOMAIN:${ACTVT_VECTOR_PORT}${NC}"
+        fi
     fi
     echo
     echo -e "${BOLD}Next Steps:${NC}"
@@ -1100,9 +1465,12 @@ main() {
     # Run installation steps
     detect_os
     check_requirements
+    detect_existing_webserver
+    determine_installation_mode
     install_vector
     configure_vector
     setup_tls
+    configure_nginx_proxy
     configure_firewall
     start_vector_service
     validate_installation
@@ -1110,6 +1478,8 @@ main() {
     # Save installation state
     echo "version=${SCRIPT_VERSION}" > "${ACTVT_STATE_DIR}/install.state"
     echo "installed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${ACTVT_STATE_DIR}/install.state"
+    echo "mode=${SELECTED_MODE}" >> "${ACTVT_STATE_DIR}/install.state"
+    echo "webserver=${EXISTING_WEBSERVER:-none}" >> "${ACTVT_STATE_DIR}/install.state"
 
     log INFO "Installation completed successfully"
 }
