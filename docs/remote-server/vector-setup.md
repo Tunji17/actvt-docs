@@ -99,22 +99,35 @@ Copy and paste this complete configuration:
 
 ```toml
 ###############################################################################
-#                    vector.toml Production Configuration                   #
+#                    vector.toml Production Configuration                     #
 ###############################################################################
 
 ################################ 1. SOURCES ###################################
 
+# Real-time system metrics
 [sources.system_metrics]
 type                 = "host_metrics"
-collectors           = ["cpu", "memory"]
+collectors           = ["cpu", "memory", "disk", "filesystem", "network", "host", "load"]
 scrape_interval_secs = 1
+
+# System information (static details collected less frequently)
+[sources.system_info]
+type    = "exec"
+command = [
+  "sh", "-c",
+  "echo \"{\\\"os\\\":\\\"$(grep PRETTY_NAME /etc/os-release | cut -d'=' -f2 | tr -d '\\\"')\\\",\\\"arch\\\":\\\"$(uname -m)\\\",\\\"domain\\\":\\\"$(hostname -f 2>/dev/null || hostname)\\\"}\""
+]
+mode = "scheduled"
+
+[sources.system_info.scheduled]
+exec_interval_secs = 300
 
 # Optional: GPU metrics (requires nvidia-smi)
 [sources.gpu_metrics]
 type    = "exec"
 command = [
   "nvidia-smi",
-  "--query-gpu=utilization.gpu",
+  "--query-gpu=utilization.gpu,memory.used,memory.total,gpu_name",
   "--format=csv,noheader,nounits"
 ]
 mode = "scheduled"
@@ -128,12 +141,52 @@ exec_interval_secs = 1
 type   = "metric_to_log"
 inputs = ["system_metrics"]
 
+# System information transform
+[transforms.format_system_info]
+type   = "remap"
+inputs = ["system_info"]
+source = '''
+parsed = parse_json!(.message)
+.metric_type = "system_info"
+.os          = parsed.os
+.arch        = parsed.arch
+.domain      = parsed.domain
+.host        = get_env_var("HOSTNAME") ?? "unknown-host"
+.timestamp   = format_timestamp!(now(), format: "%+")
+'''
+
+# GPU metrics transform (parses CSV: utilization,memory.used,memory.total,gpu_name)
 [transforms.format_gpu]
 type   = "remap"
 inputs = ["gpu_metrics"]
 source = '''
-.metric_type = "gpu"
-.value       = to_float!(.message)
+parts = split!(.message, ",")
+gpu_utilization = to_float!(parts[0])
+gpu_name = strip_whitespace!(parts[3])
+
+# GPU utilization metric
+.metric_type = "gpu_utilization"
+.value       = gpu_utilization
+.gpu_name    = gpu_name
+.host        = get_env_var("HOSTNAME") ?? "unknown-host"
+.timestamp   = format_timestamp!(now(), format: "%+")
+'''
+
+[transforms.format_gpu_memory]
+type   = "remap"
+inputs = ["gpu_metrics"]
+source = '''
+parts = split!(.message, ",")
+memory_used_mb = to_float!(parts[1])
+memory_total_mb = to_float!(parts[2])
+gpu_name = strip_whitespace!(parts[3])
+
+# GPU memory metric
+.metric_type = "gpu_memory"
+.memory_used = memory_used_mb
+.memory_total = memory_total_mb
+.memory_percent = if memory_total_mb > 0 { ((memory_used_mb / memory_total_mb) ?? 0.0) * 100.0 } else { 0.0 }
+.gpu_name    = gpu_name
 .host        = get_env_var("HOSTNAME") ?? "unknown-host"
 .timestamp   = format_timestamp!(now(), format: "%+")
 '''
@@ -192,11 +245,172 @@ if .name == "host_memory_used_bytes" {
 .timestamp = format_timestamp!(now(), format: "%+")
 '''
 
+# Network metrics transform
+[transforms.format_network]
+type   = "remap"
+inputs = ["rewrite_mem_names"]
+source = '''
+hostname = if !is_null(.host) {
+             .host
+           } else if !is_null(.tags.host) {
+             .tags.host
+           } else {
+             get_env_var("HOSTNAME") ?? "unknown-host"
+           }
+
+interface = .tags.device
+
+if .name == "network_receive_bytes_total" {
+  .metric_type = "network_rx_bytes"
+  .value       = .counter.value
+  .interface   = interface
+  .host        = hostname
+} else if .name == "network_transmit_bytes_total" {
+  .metric_type = "network_tx_bytes"
+  .value       = .counter.value
+  .interface   = interface
+  .host        = hostname
+} else if .name == "network_receive_packets_total" {
+  .metric_type = "network_rx_packets"
+  .value       = .counter.value
+  .interface   = interface
+  .host        = hostname
+} else if .name == "network_transmit_packets_total" {
+  .metric_type = "network_tx_packets"
+  .value       = .counter.value
+  .interface   = interface
+  .host        = hostname
+} else if .name == "network_receive_errs_total" {
+  .metric_type = "network_rx_errors"
+  .value       = .counter.value
+  .interface   = interface
+  .host        = hostname
+} else if .name == "network_transmit_errs_total" {
+  .metric_type = "network_tx_errors"
+  .value       = .counter.value
+  .interface   = interface
+  .host        = hostname
+} else if .name == "network_receive_drop_total" {
+  .metric_type = "network_rx_dropped"
+  .value       = .counter.value
+  .interface   = interface
+  .host        = hostname
+} else if .name == "network_transmit_drop_total" {
+  .metric_type = "network_tx_dropped"
+  .value       = .counter.value
+  .interface   = interface
+  .host        = hostname
+} else {
+  abort
+}
+
+.timestamp = format_timestamp!(now(), format: "%+")
+'''
+
+# Storage/Filesystem metrics transform
+[transforms.format_storage]
+type   = "remap"
+inputs = ["rewrite_mem_names"]
+source = '''
+hostname = if !is_null(.host) {
+             .host
+           } else if !is_null(.tags.host) {
+             .tags.host
+           } else {
+             get_env_var("HOSTNAME") ?? "unknown-host"
+           }
+
+filesystem = .tags.filesystem
+device = .tags.device
+
+if .name == "filesystem_total_bytes" {
+  .metric_type = "disk_total"
+  .value       = .gauge.value
+  .filesystem  = filesystem
+  .device      = device
+  .host        = hostname
+} else if .name == "filesystem_used_bytes" {
+  .metric_type = "disk_used"
+  .value       = .gauge.value
+  .filesystem  = filesystem
+  .device      = device
+  .host        = hostname
+} else if .name == "filesystem_free_bytes" {
+  .metric_type = "disk_free"
+  .value       = .gauge.value
+  .filesystem  = filesystem
+  .device      = device
+  .host        = hostname
+} else if .name == "disk_read_bytes_total" {
+  .metric_type = "disk_read_bytes"
+  .value       = .counter.value
+  .device      = device
+  .host        = hostname
+} else if .name == "disk_written_bytes_total" {
+  .metric_type = "disk_write_bytes"
+  .value       = .counter.value
+  .device      = device
+  .host        = hostname
+} else {
+  abort
+}
+
+.timestamp = format_timestamp!(now(), format: "%+")
+'''
+
+# System uptime and load metrics transform
+[transforms.format_system]
+type   = "remap"
+inputs = ["rewrite_mem_names"]
+source = '''
+hostname = if !is_null(.host) {
+             .host
+           } else if !is_null(.tags.host) {
+             .tags.host
+           } else {
+             get_env_var("HOSTNAME") ?? "unknown-host"
+           }
+
+if .name == "uptime" {
+  .metric_type = "uptime"
+  .value       = .gauge.value
+  .host        = hostname
+} else if .name == "boot_time" {
+  .metric_type = "boot_time"
+  .value       = .gauge.value
+  .host        = hostname
+} else if .name == "load1" {
+  .metric_type = "load_1min"
+  .value       = .gauge.value
+  .host        = hostname
+} else if .name == "load5" {
+  .metric_type = "load_5min"
+  .value       = .gauge.value
+  .host        = hostname
+} else if .name == "load15" {
+  .metric_type = "load_15min"
+  .value       = .gauge.value
+  .host        = hostname
+} else if .name == "host_logical_cpus" {
+  .metric_type = "cpu_logical_count"
+  .value       = .gauge.value
+  .host        = hostname
+} else if .name == "host_physical_cpus" {
+  .metric_type = "cpu_physical_count"
+  .value       = .gauge.value
+  .host        = hostname
+} else {
+  abort
+}
+
+.timestamp = format_timestamp!(now(), format: "%+")
+'''
+
 ################################ 4. PRODUCTION SINK ###########################
 
 [sinks.websocket_out]
 type    = "websocket_server"
-inputs  = ["format_metrics", "format_gpu"]
+inputs  = ["format_metrics", "format_network", "format_storage", "format_system", "format_system_info", "format_gpu", "format_gpu_memory"]
 address = "0.0.0.0:4096"
 
 encoding.codec            = "json"
@@ -216,17 +430,31 @@ enabled = true
 ### Configuration Explanation
 
 #### Sources Section
-- **`system_metrics`**: Collects CPU and memory metrics every second
-- **`gpu_metrics`**: Runs nvidia-smi command for GPU data (optional)
+- **`system_metrics`**: Collects comprehensive system metrics every second:
+  - CPU usage per core
+  - Memory usage
+  - Disk I/O
+  - Filesystem usage
+  - Network interface statistics
+  - System host information
+  - Load averages
+- **`system_info`**: Collects static system information every 5 minutes (OS, architecture, domain)
+- **`gpu_metrics`**: Runs nvidia-smi command for GPU utilization and memory data (optional)
 
 #### Transforms Section
 - **`metrics_to_logs`**: Converts metrics to log format for processing
-- **`format_gpu`**: Processes GPU command output into structured data
-- **`rewrite_mem_names`**: Normalizes memory metric names
-- **`format_metrics`**: Filters and formats metrics for WebSocket output
+- **`format_system_info`**: Processes system information (OS, architecture, domain)
+- **`format_gpu`**: Processes GPU utilization from nvidia-smi CSV output
+- **`format_gpu_memory`**: Processes GPU memory usage from nvidia-smi CSV output
+- **`rewrite_mem_names`**: Normalizes memory metric names with "host_" prefix
+- **`format_metrics`**: Filters and formats CPU and memory metrics
+- **`format_network`**: Processes network interface metrics (rx/tx bytes, packets, errors, dropped)
+- **`format_storage`**: Processes filesystem and disk I/O metrics
+- **`format_system`**: Processes system uptime, load averages, and CPU counts
 
 #### Sinks Section
 - **`websocket_out`**: Creates WebSocket server on port 4096 with TLS
+  - Combines all metric transforms into a single output stream
 
 #### API Section
 - **`api`**: Enables Vector's management API (optional)
@@ -258,13 +486,14 @@ sudo nano /etc/vector/vector.toml
 
 Remove or comment out these sections:
 1. The entire `[sources.gpu_metrics]` section
-2. The entire `[sources.gpu_metrics.scheduled]` section  
+2. The entire `[sources.gpu_metrics.scheduled]` section
 3. The entire `[transforms.format_gpu]` section
-4. Remove `"format_gpu"` from the inputs line in `[sinks.websocket_out]`
+4. The entire `[transforms.format_gpu_memory]` section
+5. Remove `"format_gpu"` and `"format_gpu_memory"` from the inputs line in `[sinks.websocket_out]`
 
 The inputs line should become:
 ```toml
-inputs  = ["format_metrics"]
+inputs  = ["format_metrics", "format_network", "format_storage", "format_system", "format_system_info"]
 ```
 
 ## Testing Configuration
