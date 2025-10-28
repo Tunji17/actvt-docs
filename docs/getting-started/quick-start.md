@@ -68,6 +68,7 @@ Actvt includes several built-in animation themes which are lottie files that ani
 Set up keyboard shortcuts for quick access:
 
 - **Show/Hide Dashboard**: Default `⌥` `+` `T` `+` `.`
+- **Show/Hide Remote Servers**: Default `⌥` `+` `T` `+` `R`
 
 ### Performance Verification
 
@@ -100,21 +101,5 @@ Explore all the monitoring capabilities built into Actvt:
 - **Browse Documentation**: Explore all features in detail
 - **Community Support**: Join our community discussions
 - **Report Issues**: Help us improve Actvt
-
-## Troubleshooting
-
-### Common Quick Start Issues
-
-**Menu bar icon not showing**
-
-- Check System Preferences → Users & Groups → Login Items
-- Restart Actvt application
-- Verify menu bar isn't auto-hiding
-
-**Permissions errors**
-
-- Run Actvt with administrator privileges once
-- Reset permissions in System Preferences → Security & Privacy
-- Reinstall if persistent issues occur
 
 Congratulations! You're now ready to monitor your Mac's performance with Actvt. Jump to **[Remote Server Setup](../remote-server/overview)** if you want to monitor remote systems.

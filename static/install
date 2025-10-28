@@ -15,6 +15,10 @@
 #   ACTVT_NGINX_WEBROOT      - Nginx webroot for certificate validation (default: /var/www/html)
 #   ACTVT_FORCE_STANDALONE   - Force standalone mode even if web server detected (default: no)
 #   ACTVT_CONFIGURE_FIREWALL - Configure firewall rules (default: yes)
+#   ACTVT_ENABLE_MTLS        - Enable mTLS client certificate verification (default: no)
+#   ACTVT_MTLS_CA_DAYS       - CA certificate validity in days (default: 3650)
+#   ACTVT_MTLS_CLIENT_DAYS   - Client certificate validity in days (default: 365)
+#   ACTVT_MTLS_CLIENT_CN     - Client certificate common name (default: actvt-client-001)
 #
 # Installation Modes:
 #   - auto: Automatically detect existing web server and choose appropriate mode
@@ -30,6 +34,12 @@
 #   export ACTVT_DOMAIN=monitor.yourdomain.com
 #   export ACTVT_EMAIL=admin@yourdomain.com
 #   export ACTVT_INSTALL_MODE=proxy
+#   curl -L https://actvt.io/install | bash
+#
+# Usage (enable mTLS for enhanced security):
+#   export ACTVT_DOMAIN=monitor.yourdomain.com
+#   export ACTVT_EMAIL=admin@yourdomain.com
+#   export ACTVT_ENABLE_MTLS=yes
 #   curl -L https://actvt.io/install | bash
 #
 # Documentation: https://actvt.io/docs/remote-server/overview
@@ -53,6 +63,10 @@ readonly ACTVT_INSTALL_MODE="${ACTVT_INSTALL_MODE:-auto}"
 readonly ACTVT_VECTOR_PORT="${ACTVT_VECTOR_PORT:-4096}"
 readonly ACTVT_NGINX_WEBROOT="${ACTVT_NGINX_WEBROOT:-/var/www/html}"
 readonly ACTVT_FORCE_STANDALONE="${ACTVT_FORCE_STANDALONE:-no}"
+readonly ACTVT_ENABLE_MTLS="${ACTVT_ENABLE_MTLS:-no}"
+readonly ACTVT_MTLS_CA_DAYS="${ACTVT_MTLS_CA_DAYS:-3650}"
+readonly ACTVT_MTLS_CLIENT_DAYS="${ACTVT_MTLS_CLIENT_DAYS:-365}"
+readonly ACTVT_MTLS_CLIENT_CN="${ACTVT_MTLS_CLIENT_CN:-actvt-client-001}"
 
 # Global variables for detected state
 EXISTING_WEBSERVER=""
@@ -64,6 +78,8 @@ readonly ACTVT_LOG_FILE="/var/log/actvt-install.log"
 readonly ACTVT_BACKUP_DIR="${ACTVT_STATE_DIR}/backups"
 readonly VECTOR_CONFIG_DIR="/etc/vector"
 readonly VECTOR_CERTS_DIR="${VECTOR_CONFIG_DIR}/certs"
+readonly VECTOR_MTLS_DIR="${VECTOR_CERTS_DIR}/mtls"
+readonly VECTOR_MTLS_CLIENTS_DIR="${VECTOR_MTLS_DIR}/clients"
 
 # Color codes for output
 readonly RED='\033[0;31m'
@@ -76,7 +92,7 @@ readonly BOLD='\033[1m'
 
 # Progress tracking
 CURRENT_STEP=0
-TOTAL_STEPS=9
+TOTAL_STEPS=10
 
 ###############################################################################
 #                           Logging Functions                                 #
@@ -470,10 +486,23 @@ configure_vector() {
 
 ################################ 1. SOURCES ###################################
 
+# Real-time system metrics
 [sources.system_metrics]
 type                 = "host_metrics"
-collectors           = ["cpu", "memory"]
+collectors           = ["cpu", "memory", "disk", "filesystem", "network", "host", "load"]
 scrape_interval_secs = 1
+
+# System information (static details collected less frequently)
+[sources.system_info]
+type    = "exec"
+command = [
+  "sh", "-c",
+  "echo \"{\\\"os\\\":\\\"$(grep PRETTY_NAME /etc/os-release | cut -d'=' -f2 | tr -d '\\\"')\\\",\\\"arch\\\":\\\"$(uname -m)\\\",\\\"domain\\\":\\\"$(cat /var/lib/actvt/domain 2>/dev/null || echo 'unknown')\\\",\\\"ipv4\\\":\\\"$(ip route get 1 2>/dev/null | awk '{print $7;exit}' || hostname -I 2>/dev/null | awk '{print $1}' || echo 'unknown')\\\"}\""
+]
+mode = "scheduled"
+
+[sources.system_info.scheduled]
+exec_interval_secs = 300
 
 EOF
 
@@ -485,7 +514,7 @@ EOF
 type    = "exec"
 command = [
   "nvidia-smi",
-  "--query-gpu=utilization.gpu",
+  "--query-gpu=utilization.gpu,memory.used,memory.total,gpu_name,temperature.gpu,power.draw,power.limit,fan.speed,clocks.current.graphics,clocks.current.memory,utilization.encoder,utilization.decoder,pstate",
   "--format=csv,noheader,nounits"
 ]
 mode = "scheduled"
@@ -504,16 +533,153 @@ EOF
 type   = "metric_to_log"
 inputs = ["system_metrics"]
 
+# System information transform
+[transforms.format_system_info]
+type   = "remap"
+inputs = ["system_info"]
+source = '''
+parsed = parse_json!(.message)
+.metric_type = "system_info"
+.os          = parsed.os
+.arch        = parsed.arch
+.domain      = parsed.domain
+.ipv4        = parsed.ipv4
+.host        = get_env_var("HOSTNAME") ?? "unknown-host"
+.timestamp   = format_timestamp!(now(), format: "%+")
+'''
+
 EOF
 
     if [ "${gpu_enabled}" = "true" ]; then
         cat >> "${VECTOR_CONFIG_DIR}/vector.toml" << 'EOF'
+# GPU metrics transform (parses CSV: utilization,memory.used,memory.total,gpu_name)
 [transforms.format_gpu]
 type   = "remap"
 inputs = ["gpu_metrics"]
 source = '''
-.metric_type = "gpu"
-.value       = to_float!(.message)
+parts = split!(.message, ",")
+gpu_utilization = to_float!(parts[0])
+memory_used_mb = to_float!(parts[1])
+memory_total_mb = to_float!(parts[2])
+gpu_name = strip_whitespace!(parts[3])
+
+# GPU utilization metric
+.metric_type = "gpu_utilization"
+.value       = gpu_utilization
+.gpu_name    = gpu_name
+.host        = get_env_var("HOSTNAME") ?? "unknown-host"
+.timestamp   = format_timestamp!(now(), format: "%+")
+'''
+
+[transforms.format_gpu_memory]
+type   = "remap"
+inputs = ["gpu_metrics"]
+source = '''
+parts = split!(.message, ",")
+memory_used_mb = to_float!(parts[1])
+memory_total_mb = to_float!(parts[2])
+gpu_name = strip_whitespace!(parts[3])
+
+# GPU memory metric
+.metric_type = "gpu_memory"
+.memory_used = memory_used_mb
+.memory_total = memory_total_mb
+.memory_percent = (memory_used_mb / memory_total_mb) * 100.0
+.gpu_name    = gpu_name
+.host        = get_env_var("HOSTNAME") ?? "unknown-host"
+.timestamp   = format_timestamp!(now(), format: "%+")
+'''
+
+# GPU temperature transform
+[transforms.format_gpu_temperature]
+type   = "remap"
+inputs = ["gpu_metrics"]
+source = '''
+parts = split!(.message, ",")
+temperature_celsius = to_float!(parts[4])
+gpu_name = strip_whitespace!(parts[3])
+
+# GPU temperature metric
+.metric_type = "gpu_temperature"
+.value       = temperature_celsius
+.gpu_name    = gpu_name
+.host        = get_env_var("HOSTNAME") ?? "unknown-host"
+.timestamp   = format_timestamp!(now(), format: "%+")
+'''
+
+# GPU clock frequency transform
+[transforms.format_gpu_clocks]
+type   = "remap"
+inputs = ["gpu_metrics"]
+source = '''
+parts = split!(.message, ",")
+clock_graphics_mhz = to_float!(parts[8])
+clock_memory_mhz = to_float!(parts[9])
+gpu_name = strip_whitespace!(parts[3])
+
+# GPU clocks metric
+.metric_type = "gpu_clocks"
+.clock_graphics = clock_graphics_mhz
+.clock_memory = clock_memory_mhz
+.gpu_name    = gpu_name
+.host        = get_env_var("HOSTNAME") ?? "unknown-host"
+.timestamp   = format_timestamp!(now(), format: "%+")
+'''
+
+# GPU power metrics transform
+[transforms.format_gpu_power]
+type   = "remap"
+inputs = ["gpu_metrics"]
+source = '''
+parts = split!(.message, ",")
+power_draw_watts = to_float!(parts[5])
+power_limit_watts = to_float!(parts[6])
+gpu_name = strip_whitespace!(parts[3])
+
+# GPU power metric
+.metric_type = "gpu_power"
+.power_draw = power_draw_watts
+.power_limit = power_limit_watts
+.power_percent = if power_limit_watts > 0 { ((power_draw_watts / power_limit_watts) ?? 0.0) * 100.0 } else { 0.0 }
+.gpu_name    = gpu_name
+.host        = get_env_var("HOSTNAME") ?? "unknown-host"
+.timestamp   = format_timestamp!(now(), format: "%+")
+'''
+
+# GPU encoder/decoder utilization transform
+[transforms.format_gpu_encoder_decoder]
+type   = "remap"
+inputs = ["gpu_metrics"]
+source = '''
+parts = split!(.message, ",")
+encoder_utilization = to_float!(parts[10])
+decoder_utilization = to_float!(parts[11])
+gpu_name = strip_whitespace!(parts[3])
+
+# GPU encoder/decoder metric
+.metric_type = "gpu_encoder_decoder"
+.encoder_utilization = encoder_utilization
+.decoder_utilization = decoder_utilization
+.gpu_name    = gpu_name
+.host        = get_env_var("HOSTNAME") ?? "unknown-host"
+.timestamp   = format_timestamp!(now(), format: "%+")
+'''
+
+# GPU fan speed and performance state transform
+[transforms.format_gpu_fan_pstate]
+type   = "remap"
+inputs = ["gpu_metrics"]
+source = '''
+parts = split!(.message, ",")
+fan_speed_percent = to_float!(parts[7])
+pstate = strip_whitespace!(parts[12])
+gpu_name = strip_whitespace!(parts[3])
+
+# GPU fan and pstate metric
+.metric_type = "gpu_fan_pstate"
+.fan_speed = fan_speed_percent
+.performance_state = pstate
+.gpu_name    = gpu_name
 .host        = get_env_var("HOSTNAME") ?? "unknown-host"
 .timestamp   = format_timestamp!(now(), format: "%+")
 '''
@@ -576,6 +742,167 @@ if .name == "host_memory_used_bytes" {
 .timestamp = format_timestamp!(now(), format: "%+")
 '''
 
+# Network metrics transform
+[transforms.format_network]
+type   = "remap"
+inputs = ["rewrite_mem_names"]
+source = '''
+hostname = if !is_null(.host) {
+             .host
+           } else if !is_null(.tags.host) {
+             .tags.host
+           } else {
+             get_env_var("HOSTNAME") ?? "unknown-host"
+           }
+
+interface = .tags.device ?? "unknown"
+
+if .name == "network_receive_bytes_total" {
+  .metric_type = "network_rx_bytes"
+  .value       = .counter.value
+  .interface   = interface
+  .host        = hostname
+} else if .name == "network_transmit_bytes_total" {
+  .metric_type = "network_tx_bytes"
+  .value       = .counter.value
+  .interface   = interface
+  .host        = hostname
+} else if .name == "network_receive_packets_total" {
+  .metric_type = "network_rx_packets"
+  .value       = .counter.value
+  .interface   = interface
+  .host        = hostname
+} else if .name == "network_transmit_packets_total" {
+  .metric_type = "network_tx_packets"
+  .value       = .counter.value
+  .interface   = interface
+  .host        = hostname
+} else if .name == "network_receive_errs_total" {
+  .metric_type = "network_rx_errors"
+  .value       = .counter.value
+  .interface   = interface
+  .host        = hostname
+} else if .name == "network_transmit_errs_total" {
+  .metric_type = "network_tx_errors"
+  .value       = .counter.value
+  .interface   = interface
+  .host        = hostname
+} else if .name == "network_receive_drop_total" {
+  .metric_type = "network_rx_dropped"
+  .value       = .counter.value
+  .interface   = interface
+  .host        = hostname
+} else if .name == "network_transmit_drop_total" {
+  .metric_type = "network_tx_dropped"
+  .value       = .counter.value
+  .interface   = interface
+  .host        = hostname
+} else {
+  abort
+}
+
+.timestamp = format_timestamp!(now(), format: "%+")
+'''
+
+# Storage/Filesystem metrics transform
+[transforms.format_storage]
+type   = "remap"
+inputs = ["rewrite_mem_names"]
+source = '''
+hostname = if !is_null(.host) {
+             .host
+           } else if !is_null(.tags.host) {
+             .tags.host
+           } else {
+             get_env_var("HOSTNAME") ?? "unknown-host"
+           }
+
+filesystem = .tags.filesystem ?? "unknown"
+device = .tags.device ?? "unknown"
+
+if .name == "filesystem_total_bytes" {
+  .metric_type = "disk_total"
+  .value       = .gauge.value
+  .filesystem  = filesystem
+  .device      = device
+  .host        = hostname
+} else if .name == "filesystem_used_bytes" {
+  .metric_type = "disk_used"
+  .value       = .gauge.value
+  .filesystem  = filesystem
+  .device      = device
+  .host        = hostname
+} else if .name == "filesystem_free_bytes" {
+  .metric_type = "disk_free"
+  .value       = .gauge.value
+  .filesystem  = filesystem
+  .device      = device
+  .host        = hostname
+} else if .name == "disk_read_bytes_total" {
+  .metric_type = "disk_read_bytes"
+  .value       = .counter.value
+  .device      = device
+  .host        = hostname
+} else if .name == "disk_written_bytes_total" {
+  .metric_type = "disk_write_bytes"
+  .value       = .counter.value
+  .device      = device
+  .host        = hostname
+} else {
+  abort
+}
+
+.timestamp = format_timestamp!(now(), format: "%+")
+'''
+
+# System uptime and load metrics transform
+[transforms.format_system]
+type   = "remap"
+inputs = ["rewrite_mem_names"]
+source = '''
+hostname = if !is_null(.host) {
+             .host
+           } else if !is_null(.tags.host) {
+             .tags.host
+           } else {
+             get_env_var("HOSTNAME") ?? "unknown-host"
+           }
+
+if .name == "uptime" {
+  .metric_type = "uptime"
+  .value       = .gauge.value
+  .host        = hostname
+} else if .name == "boot_time" {
+  .metric_type = "boot_time"
+  .value       = .gauge.value
+  .host        = hostname
+} else if .name == "load1" {
+  .metric_type = "load_1min"
+  .value       = .gauge.value
+  .host        = hostname
+} else if .name == "load5" {
+  .metric_type = "load_5min"
+  .value       = .gauge.value
+  .host        = hostname
+} else if .name == "load15" {
+  .metric_type = "load_15min"
+  .value       = .gauge.value
+  .host        = hostname
+} else if .name == "host_logical_cpus" {
+  .metric_type = "cpu_logical_count"
+  .value       = .gauge.value
+  .host        = hostname
+} else if .name == "host_physical_cpus" {
+  .metric_type = "cpu_physical_count"
+  .value       = .gauge.value
+  .host        = hostname
+} else {
+  abort
+}
+
+.timestamp = format_timestamp!(now(), format: "%+")
+'''
+
 ################################ 4. PRODUCTION SINK ###########################
 
 [sinks.websocket_out]
@@ -584,9 +911,9 @@ EOF
 
     # Set inputs based on GPU configuration
     if [ "${gpu_enabled}" = "true" ]; then
-        echo 'inputs  = ["format_metrics", "format_gpu"]' >> "${VECTOR_CONFIG_DIR}/vector.toml"
+        echo 'inputs  = ["format_metrics", "format_network", "format_storage", "format_system", "format_system_info", "format_gpu", "format_gpu_memory", "format_gpu_temperature", "format_gpu_clocks", "format_gpu_power", "format_gpu_encoder_decoder", "format_gpu_fan_pstate"]' >> "${VECTOR_CONFIG_DIR}/vector.toml"
     else
-        echo 'inputs  = ["format_metrics"]' >> "${VECTOR_CONFIG_DIR}/vector.toml"
+        echo 'inputs  = ["format_metrics", "format_network", "format_storage", "format_system", "format_system_info"]' >> "${VECTOR_CONFIG_DIR}/vector.toml"
     fi
 
     # Set bind address based on installation mode
@@ -606,12 +933,27 @@ encoding.codec            = "json"
 encoding.timestamp_format = "rfc3339"
 EOF
 
+    # Add TLS configuration
     cat >> "${VECTOR_CONFIG_DIR}/vector.toml" << 'EOF'
 
 [sinks.websocket_out.tls]
 enabled  = true
 crt_file = "/etc/vector/certs/server.crt"
 key_file = "/etc/vector/certs/server.key"
+EOF
+
+    # Add mTLS configuration if enabled
+    if [[ "${ACTVT_ENABLE_MTLS}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        cat >> "${VECTOR_CONFIG_DIR}/vector.toml" << 'EOF'
+ca_file  = "/etc/vector/certs/mtls/ca.crt"
+verify_certificate = true
+EOF
+        progress "mTLS client certificate verification enabled"
+    else
+        progress "mTLS client certificate verification disabled (using TLS only)"
+    fi
+
+    cat >> "${VECTOR_CONFIG_DIR}/vector.toml" << 'EOF'
 
 ################################ 5. API #######################################
 
@@ -918,6 +1260,319 @@ RENEWAL_EOF
 }
 
 ###############################################################################
+#                           mTLS Certificate Setup                            #
+###############################################################################
+
+setup_mtls() {
+    log STEP "Setting up mTLS Client Authentication"
+
+    # Check if mTLS should be enabled
+    if [[ ! "${ACTVT_ENABLE_MTLS}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        log INFO "mTLS disabled by default (using TLS only)"
+        log INFO "Client certificate verification will NOT be required"
+        log INFO "Set ACTVT_ENABLE_MTLS=yes to enable mTLS for enhanced security"
+        return 0
+    fi
+
+    progress "Configuring mutual TLS (mTLS) for enhanced security..."
+
+    # Create mTLS directory structure
+    progress "Creating mTLS directory structure..."
+    mkdir -p "${VECTOR_MTLS_CLIENTS_DIR}"
+    chmod 750 "${VECTOR_MTLS_DIR}"
+    chmod 750 "${VECTOR_MTLS_CLIENTS_DIR}"
+
+    # Check if CA already exists
+    if [ -f "${VECTOR_MTLS_DIR}/ca.crt" ] && [ -f "${VECTOR_MTLS_DIR}/ca.key" ]; then
+        log INFO "mTLS CA certificate already exists"
+
+        # Check environment variable first
+        local reuse_ca="yes"
+        if [ -n "${ACTVT_REUSE_MTLS_CA:-}" ]; then
+            reuse_ca="${ACTVT_REUSE_MTLS_CA}"
+        # In non-interactive mode, reuse by default
+        elif ! is_interactive; then
+            reuse_ca="yes"
+        # Interactive mode - prompt user
+        else
+            read -p "Reuse existing mTLS CA certificate? [Y/n] " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Nn]$ ]]; then
+                reuse_ca="no"
+            fi
+        fi
+
+        if [[ "${reuse_ca}" =~ ^[Yy]([Ee][Ss])?$ ]] || [[ "${reuse_ca}" == "yes" ]]; then
+            progress "Using existing mTLS CA certificate"
+        else
+            progress "Generating new mTLS CA certificate..."
+            # Backup existing CA
+            local backup_ca_crt="$(mktemp -p "${ACTVT_BACKUP_DIR}" mtls-ca.crt.backup.XXXXXX)"
+            local backup_ca_key="$(mktemp -p "${ACTVT_BACKUP_DIR}" mtls-ca.key.backup.XXXXXX)"
+            cp "${VECTOR_MTLS_DIR}/ca.crt" "$backup_ca_crt" || true
+            cp "${VECTOR_MTLS_DIR}/ca.key" "$backup_ca_key" || true
+            progress "Existing CA backed up to $(basename "$backup_ca_crt") and $(basename "$backup_ca_key")"
+
+            # Generate new CA
+            generate_mtls_ca
+        fi
+    else
+        progress "Generating mTLS Certificate Authority (CA)..."
+        generate_mtls_ca
+    fi
+
+    # Generate initial client certificate
+    progress "Generating initial client certificate..."
+    local client_cn="${ACTVT_MTLS_CLIENT_CN}"
+
+    if [ -f "${VECTOR_MTLS_CLIENTS_DIR}/${client_cn}.crt" ]; then
+        log INFO "Client certificate '${client_cn}' already exists"
+
+        # Check if we should regenerate
+        local regen_client="no"
+        if [ -n "${ACTVT_REGEN_CLIENT_CERT:-}" ]; then
+            regen_client="${ACTVT_REGEN_CLIENT_CERT}"
+        elif ! is_interactive; then
+            regen_client="no"
+        else
+            read -p "Regenerate client certificate '${client_cn}'? [y/N] " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                regen_client="yes"
+            fi
+        fi
+
+        if [[ "${regen_client}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+            generate_mtls_client_cert "${client_cn}"
+        else
+            progress "Using existing client certificate"
+        fi
+    else
+        generate_mtls_client_cert "${client_cn}"
+    fi
+
+    # Create client certificate bundle for distribution
+    progress "Creating client certificate bundle..."
+    cd "${VECTOR_MTLS_DIR}"
+    tar -czf "${client_cn}-bundle.tar.gz" \
+        ca.crt \
+        "clients/${client_cn}.crt" \
+        "clients/${client_cn}.key" \
+        >> "${ACTVT_LOG_FILE}" 2>&1
+
+    chmod 600 "${client_cn}-bundle.tar.gz"
+    progress "Client certificate bundle created: ${VECTOR_MTLS_DIR}/${client_cn}-bundle.tar.gz"
+
+    # Create client certificate generation script
+    progress "Creating client certificate generation script..."
+    create_client_cert_generator
+
+    # Set proper ownership
+    chown -R vector:vector "${VECTOR_MTLS_DIR}" || true
+
+    log SUCCESS "mTLS configured successfully"
+    log INFO "Client certificate bundle: ${VECTOR_MTLS_DIR}/${client_cn}-bundle.tar.gz"
+    log INFO "Generate additional clients: sudo ${VECTOR_MTLS_DIR}/generate-client.sh <client-name>"
+}
+
+generate_mtls_ca() {
+    local ca_key="${VECTOR_MTLS_DIR}/ca.key"
+    local ca_crt="${VECTOR_MTLS_DIR}/ca.crt"
+    local ca_days="${ACTVT_MTLS_CA_DAYS}"
+
+    # Generate CA private key (4096-bit, no password for automation)
+    progress "Generating CA private key (4096-bit)..."
+    openssl genrsa -out "$ca_key" 4096 >> "${ACTVT_LOG_FILE}" 2>&1 || \
+        error_exit "Failed to generate CA private key"
+
+    # Create self-signed CA certificate
+    progress "Creating self-signed CA certificate (valid for ${ca_days} days)..."
+    openssl req -new -x509 -sha256 -days "${ca_days}" \
+        -key "$ca_key" \
+        -out "$ca_crt" \
+        -subj "/CN=Actvt-CA/O=Actvt/C=US" \
+        >> "${ACTVT_LOG_FILE}" 2>&1 || \
+        error_exit "Failed to create CA certificate"
+
+    # Set proper permissions
+    chmod 600 "$ca_key"
+    chmod 644 "$ca_crt"
+
+    progress "CA certificate generated successfully"
+}
+
+generate_mtls_client_cert() {
+    local client_name="$1"
+    local client_key="${VECTOR_MTLS_CLIENTS_DIR}/${client_name}.key"
+    local client_csr="${VECTOR_MTLS_CLIENTS_DIR}/${client_name}.csr"
+    local client_crt="${VECTOR_MTLS_CLIENTS_DIR}/${client_name}.crt"
+    local ca_crt="${VECTOR_MTLS_DIR}/ca.crt"
+    local ca_key="${VECTOR_MTLS_DIR}/ca.key"
+    local client_days="${ACTVT_MTLS_CLIENT_DAYS}"
+
+    # Generate client private key (2048-bit)
+    progress "Generating client private key for '${client_name}'..."
+    openssl genrsa -out "$client_key" 2048 >> "${ACTVT_LOG_FILE}" 2>&1 || \
+        error_exit "Failed to generate client private key"
+
+    # Create Certificate Signing Request (CSR)
+    progress "Creating certificate signing request..."
+    openssl req -new \
+        -key "$client_key" \
+        -out "$client_csr" \
+        -subj "/CN=${client_name}/O=Actvt" \
+        >> "${ACTVT_LOG_FILE}" 2>&1 || \
+        error_exit "Failed to create CSR"
+
+    # Sign the client certificate with CA
+    progress "Signing client certificate (valid for ${client_days} days)..."
+    openssl x509 -req -days "${client_days}" -sha256 \
+        -in "$client_csr" \
+        -CA "$ca_crt" \
+        -CAkey "$ca_key" \
+        -CAcreateserial \
+        -out "$client_crt" \
+        -extfile <(printf "extendedKeyUsage=clientAuth") \
+        >> "${ACTVT_LOG_FILE}" 2>&1 || \
+        error_exit "Failed to sign client certificate"
+
+    # Set proper permissions
+    chmod 644 "$client_crt"
+    chmod 600 "$client_key"
+
+    # Clean up CSR
+    rm -f "$client_csr"
+
+    progress "Client certificate '${client_name}' generated successfully"
+}
+
+create_client_cert_generator() {
+    local script_path="${VECTOR_MTLS_DIR}/generate-client.sh"
+
+    cat > "$script_path" << 'GENCERT_EOF'
+#!/bin/bash
+###############################################################################
+#                   Actvt mTLS Client Certificate Generator                  #
+###############################################################################
+set -euo pipefail
+
+if [ "$EUID" -ne 0 ]; then
+    echo "ERROR: Please run as root or with sudo"
+    exit 1
+fi
+
+CLIENT_NAME="${1:-}"
+if [ -z "$CLIENT_NAME" ]; then
+    echo "Usage: $0 <client-name>"
+    echo "Example: $0 actvt-client-002"
+    exit 1
+fi
+
+# Configuration
+MTLS_DIR="/etc/vector/certs/mtls"
+CLIENT_DIR="${MTLS_DIR}/clients"
+CA_CRT="${MTLS_DIR}/ca.crt"
+CA_KEY="${MTLS_DIR}/ca.key"
+CLIENT_KEY="${CLIENT_DIR}/${CLIENT_NAME}.key"
+CLIENT_CSR="${CLIENT_DIR}/${CLIENT_NAME}.csr"
+CLIENT_CRT="${CLIENT_DIR}/${CLIENT_NAME}.crt"
+BUNDLE="${MTLS_DIR}/${CLIENT_NAME}-bundle.tar.gz"
+CLIENT_DAYS="${ACTVT_MTLS_CLIENT_DAYS:-365}"
+
+# Verify CA exists
+if [ ! -f "$CA_CRT" ] || [ ! -f "$CA_KEY" ]; then
+    echo "ERROR: CA certificates not found in ${MTLS_DIR}"
+    echo "Please run the installation script to set up mTLS first"
+    exit 1
+fi
+
+echo "Generating client certificate: ${CLIENT_NAME}"
+echo "Certificate validity: ${CLIENT_DAYS} days"
+echo ""
+
+# Check if certificate already exists
+if [ -f "$CLIENT_CRT" ]; then
+    read -p "Certificate '${CLIENT_NAME}' already exists. Overwrite? [y/N] " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Aborted."
+        exit 0
+    fi
+    echo "Regenerating certificate..."
+fi
+
+# Generate client private key
+echo "→ Generating client private key..."
+openssl genrsa -out "$CLIENT_KEY" 2048 2>/dev/null || {
+    echo "ERROR: Failed to generate private key"
+    exit 1
+}
+
+# Create CSR
+echo "→ Creating certificate signing request..."
+openssl req -new \
+    -key "$CLIENT_KEY" \
+    -out "$CLIENT_CSR" \
+    -subj "/CN=${CLIENT_NAME}/O=Actvt" 2>/dev/null || {
+    echo "ERROR: Failed to create CSR"
+    exit 1
+}
+
+# Sign certificate
+echo "→ Signing certificate with CA..."
+openssl x509 -req -days "${CLIENT_DAYS}" -sha256 \
+    -in "$CLIENT_CSR" \
+    -CA "$CA_CRT" \
+    -CAkey "$CA_KEY" \
+    -CAcreateserial \
+    -out "$CLIENT_CRT" \
+    -extfile <(printf "extendedKeyUsage=clientAuth") 2>/dev/null || {
+    echo "ERROR: Failed to sign certificate"
+    exit 1
+}
+
+# Set permissions
+chmod 644 "$CLIENT_CRT"
+chmod 600 "$CLIENT_KEY"
+chown vector:vector "$CLIENT_CRT" "$CLIENT_KEY" 2>/dev/null || true
+
+# Clean up CSR
+rm -f "$CLIENT_CSR"
+
+# Create distribution bundle
+echo "→ Creating distribution bundle..."
+cd "$MTLS_DIR"
+tar -czf "$BUNDLE" \
+    ca.crt \
+    "clients/${CLIENT_NAME}.crt" \
+    "clients/${CLIENT_NAME}.key" 2>/dev/null || {
+    echo "ERROR: Failed to create bundle"
+    exit 1
+}
+chmod 600 "$BUNDLE"
+
+echo ""
+echo "✓ Client certificate generated successfully"
+echo "✓ Certificate: ${CLIENT_CRT}"
+echo "✓ Private key: ${CLIENT_KEY}"
+echo "✓ Bundle: ${BUNDLE}"
+echo ""
+echo "Certificate details:"
+openssl x509 -in "$CLIENT_CRT" -noout -subject -dates 2>/dev/null
+echo ""
+echo "To distribute to the client:"
+echo "  scp ${BUNDLE} user@client-machine:~/"
+echo ""
+echo "On the client machine, extract the bundle:"
+echo "  tar -xzf ${CLIENT_NAME}-bundle.tar.gz"
+echo ""
+GENCERT_EOF
+
+    chmod +x "$script_path"
+    progress "Client certificate generator created at ${script_path}"
+}
+
+###############################################################################
 #                       Nginx Reverse Proxy Configuration                     #
 ###############################################################################
 
@@ -955,6 +1610,27 @@ configure_nginx_proxy() {
     if [ "$conflict" = true ]; then
         mkdir -p "/etc/nginx/snippets"
         cat > "$nginx_snippet" << NGINX_SNIPPET
+# Actvt Vector WebSocket Configuration Snippet
+# Add these directives to your existing server block
+
+NGINX_SNIPPET
+
+        # Add mTLS configuration if enabled
+        if [[ "${ACTVT_ENABLE_MTLS}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+            cat >> "$nginx_snippet" << 'NGINX_MTLS_SNIPPET'
+# mTLS client certificate verification (add to server block)
+# IMPORTANT: Add these lines at the server level, not inside location blocks
+#
+# ssl_client_certificate /etc/vector/certs/mtls/ca.crt;
+# ssl_verify_client on;
+# ssl_verify_depth 2;
+#
+
+NGINX_MTLS_SNIPPET
+        fi
+
+        cat >> "$nginx_snippet" << NGINX_SNIPPET
+# WebSocket proxy location block
 location /actvt {
     proxy_pass https://127.0.0.1:${ACTVT_VECTOR_PORT};
     proxy_http_version 1.1;
@@ -982,6 +1658,12 @@ NGINX_SNIPPET
         log WARNING "An existing nginx server block for ${domain} was detected."
         log INFO "Created snippet at ${nginx_snippet}. Include it inside your existing server block, e.g.:"
         echo "    include ${nginx_snippet};" | tee -a "${ACTVT_LOG_FILE}" >/dev/null
+
+        if [[ "${ACTVT_ENABLE_MTLS}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+            log WARNING "mTLS is enabled. You MUST uncomment the ssl_client_certificate directives in the snippet"
+            log WARNING "and add them to your server block at the server level (not inside location blocks)."
+        fi
+
         log INFO "Then reload nginx: systemctl reload nginx"
         log SUCCESS "Nginx reverse proxy snippet generated"
         log INFO "Vector WebSocket will be accessible at: wss://${domain}/actvt after you include the snippet"
@@ -1005,6 +1687,21 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers on;
     ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384';
+EOF
+
+    # Add mTLS configuration if enabled
+    if [[ "${ACTVT_ENABLE_MTLS}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        cat >> "$nginx_config" << 'NGINX_MTLS_EOF'
+
+    # mTLS client certificate verification
+    ssl_client_certificate /etc/vector/certs/mtls/ca.crt;
+    ssl_verify_client on;
+    ssl_verify_depth 2;
+NGINX_MTLS_EOF
+        progress "Nginx mTLS client verification enabled"
+    fi
+
+    cat >> "$nginx_config" << 'NGINX_EOF'
 
     # Actvt Vector WebSocket endpoint
     location /actvt {
@@ -1383,6 +2080,29 @@ validate_installation() {
         return 1
     fi
 
+    # Check mTLS certificates if enabled
+    if [[ "${ACTVT_ENABLE_MTLS}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        progress "Checking mTLS certificates..."
+        if [ -f "${VECTOR_MTLS_DIR}/ca.crt" ] && [ -f "${VECTOR_MTLS_DIR}/ca.key" ]; then
+            local ca_expiry=$(openssl x509 -in "${VECTOR_MTLS_DIR}/ca.crt" -noout -enddate 2>/dev/null | cut -d= -f2)
+            progress "mTLS CA certificate: Valid until ${ca_expiry} ✓"
+
+            # Check client certificate
+            local client_cn="${ACTVT_MTLS_CLIENT_CN}"
+            if [ -f "${VECTOR_MTLS_CLIENTS_DIR}/${client_cn}.crt" ]; then
+                local client_expiry=$(openssl x509 -in "${VECTOR_MTLS_CLIENTS_DIR}/${client_cn}.crt" -noout -enddate 2>/dev/null | cut -d= -f2)
+                progress "Client certificate: Valid until ${client_expiry} ✓"
+            else
+                log WARNING "Client certificate not found"
+            fi
+        else
+            log ERROR "mTLS CA certificates not found"
+            return 1
+        fi
+    else
+        progress "mTLS: Disabled ⚠"
+    fi
+
     # Get domain from state file
     local domain=""
     if [ -f "${ACTVT_STATE_DIR}/domain" ]; then
@@ -1416,17 +2136,53 @@ validate_installation() {
         fi
     fi
     echo
+    # mTLS information
+    if [[ "${ACTVT_ENABLE_MTLS}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        local client_cn="${ACTVT_MTLS_CLIENT_CN}"
+        echo -e "${BOLD}mTLS Client Certificates:${NC}"
+        echo -e "  Client certificate bundle has been created at:"
+        echo -e "  ${CYAN}${VECTOR_MTLS_DIR}/${client_cn}-bundle.tar.gz${NC}"
+        echo -e ""
+        echo -e "  Download this bundle to your local machine:"
+        echo -e "  ${CYAN}scp root@${domain:-YOUR_SERVER}:${VECTOR_MTLS_DIR}/${client_cn}-bundle.tar.gz ./${NC}"
+        echo -e ""
+        echo -e "  Extract the bundle to get the required certificates:"
+        echo -e "  ${CYAN}tar -xzf ${client_cn}-bundle.tar.gz${NC}"
+        echo -e ""
+        echo -e "  Files included:"
+        echo -e "    • ${CYAN}ca.crt${NC} - CA certificate (for verification)"
+        echo -e "    • ${CYAN}clients/${client_cn}.crt${NC} - Client certificate"
+        echo -e "    • ${CYAN}clients/${client_cn}.key${NC} - Client private key"
+        echo
+    else
+        echo -e "${BOLD}Security Warning:${NC}"
+        echo -e "  ${YELLOW}⚠ mTLS is DISABLED${NC}"
+        echo -e "  Any client can connect without authentication"
+        echo -e "  Consider enabling mTLS for production use"
+        echo
+    fi
     echo -e "${BOLD}Next Steps:${NC}"
-    echo -e "  1. Open Actvt on your Mac"
-    echo -e "  2. Go to Settings → Remote Servers"
-    echo -e "  3. Add a new server with the WebSocket URL above"
-    echo -e "  4. Start monitoring your remote server!"
+    echo -e "  1. Download the client certificate bundle (see above)"
+    echo -e "  2. Open Actvt on your Mac"
+    echo -e "  3. Go to Settings → Remote Servers"
+    echo -e "  4. Add a new server with the WebSocket URL and certificates"
+    echo -e "  5. Start monitoring your remote server!"
     echo
     echo -e "${BOLD}Service Management:${NC}"
     echo -e "  • Check status:  ${CYAN}sudo systemctl status vector${NC}"
     echo -e "  • View logs:     ${CYAN}sudo journalctl -u vector -f${NC}"
     echo -e "  • Restart:       ${CYAN}sudo systemctl restart vector${NC}"
     echo
+    if [[ "${ACTVT_ENABLE_MTLS}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        echo -e "${BOLD}mTLS Certificate Management:${NC}"
+        echo -e "  • Generate new client cert:"
+        echo -e "    ${CYAN}sudo ${VECTOR_MTLS_DIR}/generate-client.sh actvt-client-002${NC}"
+        echo -e "  • List certificates:"
+        echo -e "    ${CYAN}ls -la ${VECTOR_MTLS_CLIENTS_DIR}/${NC}"
+        echo -e "  • Check certificate expiry:"
+        echo -e "    ${CYAN}openssl x509 -in ${VECTOR_MTLS_CLIENTS_DIR}/${ACTVT_MTLS_CLIENT_CN}.crt -noout -dates${NC}"
+        echo
+    fi
     echo -e "${BOLD}Documentation:${NC}"
     echo -e "  ${CYAN}https://actvt.io/docs/remote-server/overview${NC}"
     echo
@@ -1484,6 +2240,7 @@ main() {
     determine_installation_mode
     install_vector
     setup_tls
+    setup_mtls
     configure_vector
     configure_nginx_proxy
     configure_firewall
@@ -1495,6 +2252,12 @@ main() {
     echo "installed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${ACTVT_STATE_DIR}/install.state"
     echo "mode=${SELECTED_MODE}" >> "${ACTVT_STATE_DIR}/install.state"
     echo "webserver=${EXISTING_WEBSERVER:-none}" >> "${ACTVT_STATE_DIR}/install.state"
+    if [[ "${ACTVT_ENABLE_MTLS}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        echo "mtls=enabled" >> "${ACTVT_STATE_DIR}/install.state"
+        echo "mtls_client_cn=${ACTVT_MTLS_CLIENT_CN}" >> "${ACTVT_STATE_DIR}/install.state"
+    else
+        echo "mtls=disabled" >> "${ACTVT_STATE_DIR}/install.state"
+    fi
 
     log INFO "Installation completed successfully"
 }

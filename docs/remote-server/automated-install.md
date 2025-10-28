@@ -1,8 +1,8 @@
 ---
-sidebar_position: 2
+sidebar_position: 3
 ---
 
-# Install Script
+# Automated Install
 
 The automated installation script is the fastest and easiest way to set up Actvt remote server monitoring. This single command handles all the complexity of installation, configuration, and setup.
 
