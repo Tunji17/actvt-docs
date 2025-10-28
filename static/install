@@ -1701,7 +1701,7 @@ NGINX_MTLS_EOF
         progress "Nginx mTLS client verification enabled"
     fi
 
-    cat >> "$nginx_config" << 'NGINX_EOF'
+    cat >> "$nginx_config" << NGINX_EOF
 
     # Actvt Vector WebSocket endpoint
     location /actvt {
