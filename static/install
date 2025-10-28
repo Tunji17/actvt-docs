@@ -1351,6 +1351,9 @@ setup_mtls() {
         generate_mtls_client_cert "${client_cn}"
     fi
 
+    # Set proper ownership before creating bundle
+    chown -R vector:vector "${VECTOR_MTLS_DIR}" || true
+
     # Create client certificate bundle for distribution
     progress "Creating client certificate bundle..."
     cd "${VECTOR_MTLS_DIR}"
@@ -1366,9 +1369,6 @@ setup_mtls() {
     # Create client certificate generation script
     progress "Creating client certificate generation script..."
     create_client_cert_generator
-
-    # Set proper ownership
-    chown -R vector:vector "${VECTOR_MTLS_DIR}" || true
 
     log SUCCESS "mTLS configured successfully"
     log INFO "Client certificate bundle: ${VECTOR_MTLS_DIR}/${client_cn}-bundle.tar.gz"
@@ -1439,6 +1439,9 @@ generate_mtls_client_cert() {
     # Set proper permissions
     chmod 644 "$client_crt"
     chmod 600 "$client_key"
+
+    # Set proper ownership
+    chown vector:vector "$client_crt" "$client_key" 2>/dev/null || true
 
     # Clean up CSR
     rm -f "$client_csr"
