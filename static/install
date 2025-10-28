@@ -497,7 +497,7 @@ scrape_interval_secs = 1
 type    = "exec"
 command = [
   "sh", "-c",
-  "echo \"{\\\"os\\\":\\\"$(grep PRETTY_NAME /etc/os-release | cut -d'=' -f2 | tr -d '\\\"')\\\",\\\"arch\\\":\\\"$(uname -m)\\\",\\\"domain\\\":\\\"$(cat /var/lib/actvt/domain 2>/dev/null || echo 'unknown')\\\",\\\"ipv4\\\":\\\"$(ip route get 1 2>/dev/null | awk '{print $7;exit}' || hostname -I 2>/dev/null | awk '{print $1}' || echo 'unknown')\\\"}\""
+  "echo \"{\\\"os\\\":\\\"$(grep PRETTY_NAME /etc/os-release | cut -d'=' -f2 | tr -d '\\\"')\\\",\\\"arch\\\":\\\"$(uname -m)\\\",\\\"domain\\\":\\\"$(cat /var/lib/actvt/domain 2>/dev/null || echo 'unknown')\\\",\\\"ipv4\\\":\\\"$(ip route get 1 2>/dev/null | awk '{print $$7;exit}' || hostname -I 2>/dev/null | awk '{print $$1}' || echo 'unknown')\\\"}\""
 ]
 mode = "scheduled"
 
