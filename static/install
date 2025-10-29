@@ -475,6 +475,7 @@ configure_vector() {
 
     # Create Vector configuration directory
     mkdir -p "${VECTOR_CONFIG_DIR}"
+    chmod 755 "${VECTOR_CONFIG_DIR}"
 
     progress "Creating Vector configuration..."
 
@@ -963,6 +964,7 @@ EOF
 
     # Set proper permissions
     chown -R vector:vector "${VECTOR_CONFIG_DIR}" || true
+    chmod 755 "${VECTOR_CONFIG_DIR}"
     chmod 644 "${VECTOR_CONFIG_DIR}/vector.toml"
 
     # Validate configuration (will fail if certs don't exist yet, but that's expected)
@@ -1199,7 +1201,7 @@ setup_tls() {
     # Install certificates for Vector by copying from Let's Encrypt
     progress "Installing certificates for Vector..."
     mkdir -p "${VECTOR_CERTS_DIR}"
-    chmod 750 "${VECTOR_CERTS_DIR}"
+    chmod 755 "${VECTOR_CERTS_DIR}"
     if ! install -o vector -g vector -m 644 \
         "/etc/letsencrypt/live/${domain}/fullchain.pem" "${VECTOR_CERTS_DIR}/server.crt"; then
         error_exit "Failed to install Vector certificate"
@@ -1227,7 +1229,7 @@ DST="/etc/vector/certs"
 
 logger -t actvt-renewal "Actvt: Deploying renewed certificate for ${DOMAIN}"
 
-install -d -o vector -g vector -m 750 "${DST}"
+install -d -o vector -g vector -m 755 "${DST}"
 install -o vector -g vector -m 644 "${SRC}/fullchain.pem" "${DST}/server.crt"
 install -o vector -g vector -m 640 "${SRC}/privkey.pem" "${DST}/server.key"
 
@@ -1279,8 +1281,8 @@ setup_mtls() {
     # Create mTLS directory structure
     progress "Creating mTLS directory structure..."
     mkdir -p "${VECTOR_MTLS_CLIENTS_DIR}"
-    chmod 750 "${VECTOR_MTLS_DIR}"
-    chmod 750 "${VECTOR_MTLS_CLIENTS_DIR}"
+    chmod 755 "${VECTOR_MTLS_DIR}"
+    chmod 755 "${VECTOR_MTLS_CLIENTS_DIR}"
 
     # Check if CA already exists
     if [ -f "${VECTOR_MTLS_DIR}/ca.crt" ] && [ -f "${VECTOR_MTLS_DIR}/ca.key" ]; then
