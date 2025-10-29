@@ -1362,6 +1362,7 @@ setup_mtls() {
     tar -czf "${client_cn}-bundle.tar.gz" \
         ca.crt \
         "clients/${client_cn}.crt" \
+        "clients/${client_cn}-chain.crt" \
         "clients/${client_cn}.key" \
         >> "${ACTVT_LOG_FILE}" 2>&1
 
@@ -1438,12 +1439,19 @@ generate_mtls_client_cert() {
         >> "${ACTVT_LOG_FILE}" 2>&1 || \
         error_exit "Failed to sign client certificate"
 
+    # Create chained certificate file (client cert + CA cert)
+    local client_chain="${VECTOR_MTLS_CLIENTS_DIR}/${client_name}-chain.crt"
+    progress "Creating certificate chain file..."
+    cat "$client_crt" "$ca_crt" > "$client_chain" || \
+        error_exit "Failed to create certificate chain"
+
     # Set proper permissions
     chmod 644 "$client_crt"
+    chmod 644 "$client_chain"
     chmod 600 "$client_key"
 
     # Set proper ownership
-    chown vector:vector "$client_crt" "$client_key" 2>/dev/null || true
+    chown vector:vector "$client_crt" "$client_chain" "$client_key" 2>/dev/null || true
 
     # Clean up CSR
     rm -f "$client_csr"
@@ -1536,10 +1544,19 @@ openssl x509 -req -days "${CLIENT_DAYS}" -sha256 \
     exit 1
 }
 
+# Create chained certificate file
+echo "→ Creating certificate chain file..."
+CLIENT_CHAIN="${CLIENT_DIR}/${CLIENT_NAME}-chain.crt"
+cat "$CLIENT_CRT" "$CA_CRT" > "$CLIENT_CHAIN" || {
+    echo "ERROR: Failed to create certificate chain"
+    exit 1
+}
+
 # Set permissions
 chmod 644 "$CLIENT_CRT"
+chmod 644 "$CLIENT_CHAIN"
 chmod 600 "$CLIENT_KEY"
-chown vector:vector "$CLIENT_CRT" "$CLIENT_KEY" 2>/dev/null || true
+chown vector:vector "$CLIENT_CRT" "$CLIENT_CHAIN" "$CLIENT_KEY" 2>/dev/null || true
 
 # Clean up CSR
 rm -f "$CLIENT_CSR"
@@ -1550,6 +1567,7 @@ cd "$MTLS_DIR"
 tar -czf "$BUNDLE" \
     ca.crt \
     "clients/${CLIENT_NAME}.crt" \
+    "clients/${CLIENT_NAME}-chain.crt" \
     "clients/${CLIENT_NAME}.key" 2>/dev/null || {
     echo "ERROR: Failed to create bundle"
     exit 1
@@ -1559,6 +1577,7 @@ chmod 600 "$BUNDLE"
 echo ""
 echo "✓ Client certificate generated successfully"
 echo "✓ Certificate: ${CLIENT_CRT}"
+echo "✓ Certificate chain: ${CLIENT_CHAIN}"
 echo "✓ Private key: ${CLIENT_KEY}"
 echo "✓ Bundle: ${BUNDLE}"
 echo ""
@@ -1570,6 +1589,12 @@ echo "  scp ${BUNDLE} user@client-machine:~/"
 echo ""
 echo "On the client machine, extract the bundle:"
 echo "  tar -xzf ${CLIENT_NAME}-bundle.tar.gz"
+echo ""
+echo "Usage (use the -chain.crt file for mTLS):"
+echo "  curl --cert clients/${CLIENT_NAME}-chain.crt \\"
+echo "       --key clients/${CLIENT_NAME}.key \\"
+echo "       --cacert ca.crt \\"
+echo "       https://your-domain/actvt/health"
 echo ""
 GENCERT_EOF
 
