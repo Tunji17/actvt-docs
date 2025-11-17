@@ -1395,9 +1395,9 @@ generate_mtls_ca() {
     local ca_crt="${VECTOR_MTLS_DIR}/ca.crt"
     local ca_days="${ACTVT_MTLS_CA_DAYS}"
 
-    # Generate CA private key (4096-bit, no password for automation)
-    progress "Generating CA private key (4096-bit)..."
-    openssl genrsa -out "$ca_key" 4096 >> "${ACTVT_LOG_FILE}" 2>&1 || \
+    # Generate CA private key (4096-bit PKCS#8, no password for automation)
+    progress "Generating CA private key (4096-bit PKCS#8)..."
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -out "$ca_key" >> "${ACTVT_LOG_FILE}" 2>&1 || \
         error_exit "Failed to generate CA private key"
 
     # Create self-signed CA certificate
@@ -1424,9 +1424,9 @@ generate_mtls_client_cert() {
     local ca_key="${VECTOR_MTLS_DIR}/ca.key"
     local client_days="${ACTVT_MTLS_CLIENT_DAYS}"
 
-    # Generate client private key (2048-bit)
+    # Generate client private key (2048-bit PKCS#8)
     progress "Generating client private key for '${client_name}'..."
-    openssl genrsa -out "$client_key" 2048 >> "${ACTVT_LOG_FILE}" 2>&1 || \
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$client_key" >> "${ACTVT_LOG_FILE}" 2>&1 || \
         error_exit "Failed to generate client private key"
 
     # Create Certificate Signing Request (CSR)
@@ -1514,9 +1514,9 @@ if [ -f "$CLIENT_CRT" ]; then
     echo "Regenerating certificate..."
 fi
 
-# Generate client private key
-echo "→ Generating client private key..."
-openssl genrsa -out "$CLIENT_KEY" 2048 2>/dev/null || {
+# Generate client private key (PKCS#8 format)
+echo "→ Generating client private key (PKCS#8)..."
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$CLIENT_KEY" 2>/dev/null || {
     echo "ERROR: Failed to generate private key"
     exit 1
 }
