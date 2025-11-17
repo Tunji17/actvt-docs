@@ -1366,7 +1366,7 @@ setup_mtls() {
         "clients/${client_cn}.key" \
         >> "${ACTVT_LOG_FILE}" 2>&1
 
-    chmod 600 "${client_cn}-bundle.tar.gz"
+    chmod 644 "${client_cn}-bundle.tar.gz"
     progress "Client certificate bundle created: ${VECTOR_MTLS_DIR}/${client_cn}-bundle.tar.gz"
 
     # Create client certificate generation script
@@ -1398,7 +1398,7 @@ generate_mtls_ca() {
         error_exit "Failed to create CA certificate"
 
     # Set proper permissions
-    chmod 600 "$ca_key"
+    chmod 644 "$ca_key"
     chmod 644 "$ca_crt"
 
     progress "CA certificate generated successfully"
@@ -1435,7 +1435,7 @@ generate_mtls_client_cert() {
         -CAkey "$ca_key" \
         -CAcreateserial \
         -out "$client_crt" \
-        -extfile <(printf "extendedKeyUsage=clientAuth") \
+        -extfile <(printf "basicConstraints=CA:FALSE\nextendedKeyUsage=clientAuth") \
         >> "${ACTVT_LOG_FILE}" 2>&1 || \
         error_exit "Failed to sign client certificate"
 
@@ -1448,7 +1448,7 @@ generate_mtls_client_cert() {
     # Set proper permissions
     chmod 644 "$client_crt"
     chmod 644 "$client_chain"
-    chmod 600 "$client_key"
+    chmod 644 "$client_key"
 
     # Set proper ownership
     chown vector:vector "$client_crt" "$client_chain" "$client_key" 2>/dev/null || true
@@ -1539,7 +1539,7 @@ openssl x509 -req -days "${CLIENT_DAYS}" -sha256 \
     -CAkey "$CA_KEY" \
     -CAcreateserial \
     -out "$CLIENT_CRT" \
-    -extfile <(printf "extendedKeyUsage=clientAuth") 2>/dev/null || {
+    -extfile <(printf "basicConstraints=CA:FALSE\nextendedKeyUsage=clientAuth") 2>/dev/null || {
     echo "ERROR: Failed to sign certificate"
     exit 1
 }
@@ -1555,7 +1555,7 @@ cat "$CLIENT_CRT" "$CA_CRT" > "$CLIENT_CHAIN" || {
 # Set permissions
 chmod 644 "$CLIENT_CRT"
 chmod 644 "$CLIENT_CHAIN"
-chmod 600 "$CLIENT_KEY"
+chmod 644 "$CLIENT_KEY"
 chown vector:vector "$CLIENT_CRT" "$CLIENT_CHAIN" "$CLIENT_KEY" 2>/dev/null || true
 
 # Clean up CSR
@@ -1572,7 +1572,7 @@ tar -czf "$BUNDLE" \
     echo "ERROR: Failed to create bundle"
     exit 1
 }
-chmod 600 "$BUNDLE"
+chmod 644 "$BUNDLE"
 
 echo ""
 echo "✓ Client certificate generated successfully"
@@ -2258,7 +2258,7 @@ main() {
 
     # Initialize log file
     touch "${ACTVT_LOG_FILE}" 2>/dev/null || ACTVT_LOG_FILE="/tmp/actvt-install.log"
-    chmod 600 "${ACTVT_LOG_FILE}"
+    chmod 644 "${ACTVT_LOG_FILE}"
 
     log INFO "Starting Actvt installation (version ${SCRIPT_VERSION})"
     log INFO "Log file: ${ACTVT_LOG_FILE}"
