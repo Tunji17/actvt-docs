@@ -42,10 +42,10 @@
 #   export ACTVT_ENABLE_MTLS=yes
 #   curl -L https://actvt.io/install | bash
 #
-# Documentation: https://actvt.io/docs/remote-server/overview
+# Documentation: https://docs.actvt.io/remote-server/prerequisites
 #
 # Version: 1.0.0
-# Last Updated: 2025-10-08
+# Last Updated: 2025-11-17
 #
 ###############################################################################
 
@@ -94,9 +94,9 @@ readonly BOLD='\033[1m'
 CURRENT_STEP=0
 TOTAL_STEPS=10
 
-###############################################################################
-#                           Logging Functions                                 #
-###############################################################################
+# ============================================================================
+# Logging Functions
+# ============================================================================
 
 log() {
     local level="$1"
@@ -132,9 +132,9 @@ progress() {
     echo -e "${CYAN}  →${NC} $*"
 }
 
-###############################################################################
-#                           Error Handling                                    #
-###############################################################################
+# ============================================================================
+# Error Handling
+# ============================================================================
 
 cleanup() {
     local exit_code=$?
@@ -142,7 +142,7 @@ cleanup() {
         log ERROR "Installation failed with exit code ${exit_code}"
         log ERROR "Check the log file at ${ACTVT_LOG_FILE} for details"
         log INFO "You can try running the script again or follow the manual installation guide"
-        log INFO "Documentation: https://actvt.io/docs/remote-server/overview"
+        log INFO "Documentation: https://docs.actvt.io/remote-server/prerequisites"
     fi
 }
 
@@ -153,9 +153,9 @@ error_exit() {
     exit 1
 }
 
-###############################################################################
-#                        Interactive Mode Detection                           #
-###############################################################################
+# ============================================================================
+# Interactive Mode Detection
+# ============================================================================
 
 is_interactive() {
     # Check if explicitly set to non-interactive
@@ -166,9 +166,153 @@ is_interactive() {
     [ -t 0 ]
 }
 
-###############################################################################
-#                           OS Detection                                      #
-###############################################################################
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+# Prompts user for yes/no decision with environment variable override
+# Args: $1=env_var_name, $2=prompt_text, $3=default (yes|no)
+# Returns: 0 for yes, 1 for no
+prompt_yes_no() {
+    local env_var="$1"
+    local prompt="$2"
+    local default="${3:-yes}"
+    local env_value="${!env_var:-}"
+
+    # Check environment variable first
+    if [ -n "$env_value" ]; then
+        if [[ "$env_value" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+            progress "${env_var}=yes"
+            return 0
+        else
+            progress "${env_var}=${env_value}"
+            return 1
+        fi
+    fi
+
+    # Non-interactive mode: use default
+    if ! is_interactive; then
+        [ "$default" = "yes" ] && return 0 || return 1
+    fi
+
+    # Interactive prompt
+    local default_prompt="[Y/n]"
+    [ "$default" = "no" ] && default_prompt="[y/N]"
+
+    read -p "${prompt} ${default_prompt} " -n 1 -r
+    echo
+
+    if [ "$default" = "yes" ]; then
+        [[ $REPLY =~ ^[Nn]$ ]] && return 1 || return 0
+    else
+        [[ $REPLY =~ ^[Yy]$ ]] && return 0 || return 1
+    fi
+}
+
+# Wait for systemd service to reach desired state
+# Args: $1=service_name, $2=desired_state (active|inactive), $3=timeout_seconds (default: 30)
+# Returns: 0 on success, 1 on timeout
+wait_for_service_state() {
+    local service="$1"
+    local desired_state="$2"
+    local timeout="${3:-30}"
+    local count=0
+
+    while [ $count -lt $timeout ]; do
+        if [ "$desired_state" = "active" ]; then
+            systemctl is-active --quiet "$service" && return 0
+        else
+            ! systemctl is-active --quiet "$service" && return 0
+        fi
+        sleep 1
+        count=$((count + 1))
+    done
+
+    return 1
+}
+
+# Set standard permissions for certificate files
+# Args: $1=cert_path, $2=key_path, $3=owner (default: vector:vector)
+set_cert_permissions() {
+    local cert_path="$1"
+    local key_path="$2"
+    local owner="${3:-vector:vector}"
+
+    chmod 644 "$cert_path"
+    chmod 600 "$key_path"
+    chown "$owner" "$cert_path" "$key_path" 2>/dev/null || true
+}
+
+# Get required ports based on installation mode
+# Args: $1=mode (proxy|standalone)
+# Returns: space-separated list of ports
+get_required_ports() {
+    local mode="$1"
+    if [ "$mode" = "proxy" ]; then
+        echo "80 443"
+    else
+        echo "80 443 ${ACTVT_VECTOR_PORT}"
+    fi
+}
+
+# Check if a port is already open in the firewall
+# Args: $1=port, $2=firewall_type (ufw|firewalld|iptables)
+# Returns: 0 if open, 1 if not
+is_port_open() {
+    local port="$1"
+    local fw_type="$2"
+
+    case "$fw_type" in
+        ufw)
+            ufw status | grep -qE "^${port}/tcp.*ALLOW"
+            ;;
+        firewalld)
+            firewall-cmd --list-ports 2>/dev/null | grep -q "${port}/tcp"
+            ;;
+        iptables)
+            iptables -C INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null
+            ;;
+    esac
+}
+
+# Open a port in the firewall
+# Args: $1=port, $2=firewall_type (ufw|firewalld|iptables)
+open_port() {
+    local port="$1"
+    local fw_type="$2"
+
+    case "$fw_type" in
+        ufw)
+            ufw allow "${port}/tcp" >> "${ACTVT_LOG_FILE}" 2>&1
+            ;;
+        firewalld)
+            firewall-cmd --permanent --add-port="${port}/tcp" >> "${ACTVT_LOG_FILE}" 2>&1
+            ;;
+        iptables)
+            iptables -I INPUT -p tcp --dport "$port" -j ACCEPT
+            ;;
+    esac
+}
+
+# Configure firewall ports based on installation mode
+# Args: $1=firewall_type (ufw|firewalld|iptables)
+configure_firewall_ports() {
+    local fw_type="$1"
+    local required_ports=$(get_required_ports "$SELECTED_MODE")
+
+    for port in $required_ports; do
+        if is_port_open "$port" "$fw_type"; then
+            progress "Port $port already open"
+        else
+            open_port "$port" "$fw_type"
+            progress "Opened port $port"
+        fi
+    done
+}
+
+# ============================================================================
+# OS Detection
+# ============================================================================
 
 detect_os() {
     log STEP "Detecting Operating System"
@@ -225,9 +369,9 @@ detect_os() {
     log SUCCESS "OS detection complete"
 }
 
-###############################################################################
-#                        System Requirements Check                            #
-###############################################################################
+# ============================================================================
+# System Requirements Check
+# ============================================================================
 
 check_requirements() {
     log STEP "Checking System Requirements"
@@ -262,7 +406,7 @@ check_requirements() {
 
     # DNS Configuration Warning
     log WARNING "IMPORTANT: DNS Configuration Required"
-    log WARNING "Your domain must have an A or CNAME record pointing to this server"
+    log WARNING "Your domain must have an A or CNAME record"
     log WARNING "pointing to this server's IP address for Let's Encrypt to work."
     log WARNING "Without proper DNS configuration, certificate acquisition will fail."
 
@@ -297,9 +441,9 @@ check_requirements() {
     log SUCCESS "All system requirements met"
 }
 
-###############################################################################
-#                           Vector Installation                               #
-###############################################################################
+# ============================================================================
+# Vector Installation
+# ============================================================================
 
 install_vector() {
     log STEP "Installing Vector"
@@ -309,26 +453,10 @@ install_vector() {
         local installed_version=$(vector --version | grep -oP 'vector \K[0-9.]+' || echo "unknown")
         log INFO "Vector is already installed (version ${installed_version})"
 
-        # Check environment variable first
-        if [ -n "${ACTVT_REINSTALL_VECTOR:-}" ]; then
-            if [[ "${ACTVT_REINSTALL_VECTOR}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
-                progress "Reinstalling Vector (ACTVT_REINSTALL_VECTOR=yes)"
-            else
-                log INFO "Skipping Vector installation (ACTVT_REINSTALL_VECTOR=${ACTVT_REINSTALL_VECTOR})"
-                return 0
-            fi
-        # In non-interactive mode, skip by default
-        elif ! is_interactive; then
-            log INFO "Skipping Vector installation (non-interactive mode)"
+        # Prompt to reinstall (default: no in non-interactive mode)
+        if ! prompt_yes_no "ACTVT_REINSTALL_VECTOR" "Do you want to reinstall/update Vector?" "no"; then
+            log INFO "Skipping Vector installation"
             return 0
-        # Interactive mode - prompt user
-        else
-            read -p "Do you want to reinstall/update Vector? [y/N] " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                log INFO "Skipping Vector installation"
-                return 0
-            fi
         fi
     fi
 
@@ -418,9 +546,9 @@ EOF
     log SUCCESS "Vector installation complete"
 }
 
-###############################################################################
-#                          Vector Configuration                               #
-###############################################################################
+# ============================================================================
+# Vector Configuration
+# ============================================================================
 
 configure_vector() {
     log STEP "Configuring Vector"
@@ -435,26 +563,12 @@ configure_vector() {
     fi
 
     if [ "$gpu_detected" = true ]; then
-        # Check environment variable first
-        if [ -n "${ACTVT_ENABLE_GPU:-}" ]; then
-            if [[ "${ACTVT_ENABLE_GPU}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
-                gpu_enabled="true"
-                progress "GPU monitoring enabled (ACTVT_ENABLE_GPU=yes)"
-            else
-                progress "GPU monitoring disabled (ACTVT_ENABLE_GPU=${ACTVT_ENABLE_GPU})"
-            fi
-        # In non-interactive mode, enable by default if GPU detected
-        elif ! is_interactive; then
+        # Prompt to enable GPU monitoring (default: yes)
+        if prompt_yes_no "ACTVT_ENABLE_GPU" "Enable GPU monitoring?" "yes"; then
             gpu_enabled="true"
-            progress "GPU monitoring enabled (non-interactive mode, GPU detected)"
-        # Interactive mode - prompt user
+            progress "GPU monitoring will be enabled"
         else
-            read -p "Enable GPU monitoring? [Y/n] " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-                gpu_enabled="true"
-                progress "GPU monitoring will be enabled"
-            fi
+            progress "GPU monitoring disabled"
         fi
     fi
 
@@ -553,136 +667,111 @@ EOF
 
     if [ "${gpu_enabled}" = "true" ]; then
         cat >> "${VECTOR_CONFIG_DIR}/vector.toml" << 'EOF'
-# GPU metrics transform (parses CSV: utilization,memory.used,memory.total,gpu_name)
-[transforms.format_gpu]
+# Parse GPU metrics once
+[transforms.parse_gpu]
 type   = "remap"
 inputs = ["gpu_metrics"]
 source = '''
-parts = split!(.message, ",")
-gpu_utilization = to_float!(parts[0])
-memory_used_mb = to_float!(parts[1])
-memory_total_mb = to_float!(parts[2])
-gpu_name = strip_whitespace!(parts[3])
+p = split!(.message, ",")
+.p0 = to_float!(p[0])
+.p1 = to_float!(p[1])
+.p2 = to_float!(p[2])
+.p3 = strip_whitespace!(p[3])
+.p4 = to_float!(p[4])
+.p5 = to_float!(p[5])
+.p6 = to_float!(p[6])
+.p7 = to_float!(p[7])
+.p8 = to_float!(p[8])
+.p9 = to_float!(p[9])
+.p10 = to_float!(p[10])
+.p11 = to_float!(p[11])
+.p12 = strip_whitespace!(p[12])
+.h = get_env_var("HOSTNAME") ?? "unknown-host"
+.t = format_timestamp!(now(), format: "%+")
+'''
 
-# GPU utilization metric
+[transforms.format_gpu]
+type   = "remap"
+inputs = ["parse_gpu"]
+source = '''
 .metric_type = "gpu_utilization"
-.value       = gpu_utilization
-.gpu_name    = gpu_name
-.host        = get_env_var("HOSTNAME") ?? "unknown-host"
-.timestamp   = format_timestamp!(now(), format: "%+")
+.value = .p0
+.gpu_name = .p3
+.host = .h
+.timestamp = .t
 '''
 
 [transforms.format_gpu_memory]
 type   = "remap"
-inputs = ["gpu_metrics"]
+inputs = ["parse_gpu"]
 source = '''
-parts = split!(.message, ",")
-memory_used_mb = to_float!(parts[1])
-memory_total_mb = to_float!(parts[2])
-gpu_name = strip_whitespace!(parts[3])
-
-# GPU memory metric
 .metric_type = "gpu_memory"
-.memory_used = memory_used_mb
-.memory_total = memory_total_mb
-.memory_percent = if memory_total_mb > 0 { ((memory_used_mb / memory_total_mb) ?? 0.0) * 100.0 } else { 0.0 }
-.gpu_name    = gpu_name
-.host        = get_env_var("HOSTNAME") ?? "unknown-host"
-.timestamp   = format_timestamp!(now(), format: "%+")
+.memory_used = .p1
+.memory_total = .p2
+.memory_percent = if .p2 > 0 { ((.p1 / .p2) ?? 0.0) * 100.0 } else { 0.0 }
+.gpu_name = .p3
+.host = .h
+.timestamp = .t
 '''
 
-# GPU temperature transform
 [transforms.format_gpu_temperature]
 type   = "remap"
-inputs = ["gpu_metrics"]
+inputs = ["parse_gpu"]
 source = '''
-parts = split!(.message, ",")
-temperature_celsius = to_float!(parts[4])
-gpu_name = strip_whitespace!(parts[3])
-
-# GPU temperature metric
 .metric_type = "gpu_temperature"
-.value       = temperature_celsius
-.gpu_name    = gpu_name
-.host        = get_env_var("HOSTNAME") ?? "unknown-host"
-.timestamp   = format_timestamp!(now(), format: "%+")
+.value = .p4
+.gpu_name = .p3
+.host = .h
+.timestamp = .t
 '''
 
-# GPU clock frequency transform
 [transforms.format_gpu_clocks]
 type   = "remap"
-inputs = ["gpu_metrics"]
+inputs = ["parse_gpu"]
 source = '''
-parts = split!(.message, ",")
-clock_graphics_mhz = to_float!(parts[8])
-clock_memory_mhz = to_float!(parts[9])
-gpu_name = strip_whitespace!(parts[3])
-
-# GPU clocks metric
 .metric_type = "gpu_clocks"
-.clock_graphics = clock_graphics_mhz
-.clock_memory = clock_memory_mhz
-.gpu_name    = gpu_name
-.host        = get_env_var("HOSTNAME") ?? "unknown-host"
-.timestamp   = format_timestamp!(now(), format: "%+")
+.clock_graphics = .p8
+.clock_memory = .p9
+.gpu_name = .p3
+.host = .h
+.timestamp = .t
 '''
 
-# GPU power metrics transform
 [transforms.format_gpu_power]
 type   = "remap"
-inputs = ["gpu_metrics"]
+inputs = ["parse_gpu"]
 source = '''
-parts = split!(.message, ",")
-power_draw_watts = to_float!(parts[5])
-power_limit_watts = to_float!(parts[6])
-gpu_name = strip_whitespace!(parts[3])
-
-# GPU power metric
 .metric_type = "gpu_power"
-.power_draw = power_draw_watts
-.power_limit = power_limit_watts
-.power_percent = if power_limit_watts > 0 { ((power_draw_watts / power_limit_watts) ?? 0.0) * 100.0 } else { 0.0 }
-.gpu_name    = gpu_name
-.host        = get_env_var("HOSTNAME") ?? "unknown-host"
-.timestamp   = format_timestamp!(now(), format: "%+")
+.power_draw = .p5
+.power_limit = .p6
+.power_percent = if .p6 > 0 { ((.p5 / .p6) ?? 0.0) * 100.0 } else { 0.0 }
+.gpu_name = .p3
+.host = .h
+.timestamp = .t
 '''
 
-# GPU encoder/decoder utilization transform
 [transforms.format_gpu_encoder_decoder]
 type   = "remap"
-inputs = ["gpu_metrics"]
+inputs = ["parse_gpu"]
 source = '''
-parts = split!(.message, ",")
-encoder_utilization = to_float!(parts[10])
-decoder_utilization = to_float!(parts[11])
-gpu_name = strip_whitespace!(parts[3])
-
-# GPU encoder/decoder metric
 .metric_type = "gpu_encoder_decoder"
-.encoder_utilization = encoder_utilization
-.decoder_utilization = decoder_utilization
-.gpu_name    = gpu_name
-.host        = get_env_var("HOSTNAME") ?? "unknown-host"
-.timestamp   = format_timestamp!(now(), format: "%+")
+.encoder_utilization = .p10
+.decoder_utilization = .p11
+.gpu_name = .p3
+.host = .h
+.timestamp = .t
 '''
 
-# GPU fan speed and performance state transform
 [transforms.format_gpu_fan_pstate]
 type   = "remap"
-inputs = ["gpu_metrics"]
+inputs = ["parse_gpu"]
 source = '''
-parts = split!(.message, ",")
-fan_speed_percent = to_float!(parts[7])
-pstate = strip_whitespace!(parts[12])
-gpu_name = strip_whitespace!(parts[3])
-
-# GPU fan and pstate metric
 .metric_type = "gpu_fan_pstate"
-.fan_speed = fan_speed_percent
-.performance_state = pstate
-.gpu_name    = gpu_name
-.host        = get_env_var("HOSTNAME") ?? "unknown-host"
-.timestamp   = format_timestamp!(now(), format: "%+")
+.fan_speed = .p7
+.performance_state = .p12
+.gpu_name = .p3
+.host = .h
+.timestamp = .t
 '''
 
 EOF
@@ -698,43 +787,48 @@ if starts_with!(.name, "memory_") {
 }
 '''
 
+# Enrich with hostname (derive once, reuse everywhere)
+[transforms.enrich_hostname]
+type   = "remap"
+inputs = ["rewrite_mem_names"]
+source = '''
+.hostname = if !is_null(.host) {
+              .host
+            } else if !is_null(.tags.host) {
+              .tags.host
+            } else {
+              get_env_var("HOSTNAME") ?? "unknown-host"
+            }
+'''
+
 ################################ 3. FILTER & TAG ##############################
 
 [transforms.format_metrics]
 type   = "remap"
-inputs = ["rewrite_mem_names"]
+inputs = ["enrich_hostname"]
 source = '''
-# ----- derive a reliable host field -----
-hostname = if !is_null(.host) {
-             .host
-           } else if !is_null(.tags.host) {
-             .tags.host
-           } else {
-             get_env_var("HOSTNAME") ?? "unknown-host"
-           }
-
 # -------- filter + rename the metrics we care about --------
 if .name == "host_memory_used_bytes" {
   .metric_type = "memory_used"
   .value       = .gauge.value
-  .host        = hostname
+  .host        = .hostname
 
 } else if .name == "host_memory_total_bytes" {
   .metric_type = "memory_total"
   .value       = .gauge.value
-  .host        = hostname
+  .host        = .hostname
 
 } else if (.name == "host_cpu_seconds_total" || .name == "cpu_seconds_total") && .tags.mode == "idle" {
   .metric_type = "cpu_idle"
   .value       = .counter.value
   .cpu         = .tags.cpu
-  .host        = hostname
+  .host        = .hostname
 
 } else if (.name == "host_cpu_seconds_total" || .name == "cpu_seconds_total") {
   .metric_type = "cpu_total"
   .value       = .counter.value
   .cpu         = .tags.cpu
-  .host        = hostname
+  .host        = .hostname
 
 } else {
   abort   # drop everything else
@@ -746,58 +840,50 @@ if .name == "host_memory_used_bytes" {
 # Network metrics transform
 [transforms.format_network]
 type   = "remap"
-inputs = ["rewrite_mem_names"]
+inputs = ["enrich_hostname"]
 source = '''
-hostname = if !is_null(.host) {
-             .host
-           } else if !is_null(.tags.host) {
-             .tags.host
-           } else {
-             get_env_var("HOSTNAME") ?? "unknown-host"
-           }
-
 interface = .tags.device
 
 if .name == "network_receive_bytes_total" {
   .metric_type = "network_rx_bytes"
   .value       = .counter.value
   .interface   = interface
-  .host        = hostname
+  .host        = .hostname
 } else if .name == "network_transmit_bytes_total" {
   .metric_type = "network_tx_bytes"
   .value       = .counter.value
   .interface   = interface
-  .host        = hostname
+  .host        = .hostname
 } else if .name == "network_receive_packets_total" {
   .metric_type = "network_rx_packets"
   .value       = .counter.value
   .interface   = interface
-  .host        = hostname
+  .host        = .hostname
 } else if .name == "network_transmit_packets_total" {
   .metric_type = "network_tx_packets"
   .value       = .counter.value
   .interface   = interface
-  .host        = hostname
+  .host        = .hostname
 } else if .name == "network_receive_errs_total" {
   .metric_type = "network_rx_errors"
   .value       = .counter.value
   .interface   = interface
-  .host        = hostname
+  .host        = .hostname
 } else if .name == "network_transmit_errs_total" {
   .metric_type = "network_tx_errors"
   .value       = .counter.value
   .interface   = interface
-  .host        = hostname
+  .host        = .hostname
 } else if .name == "network_receive_drop_total" {
   .metric_type = "network_rx_dropped"
   .value       = .counter.value
   .interface   = interface
-  .host        = hostname
+  .host        = .hostname
 } else if .name == "network_transmit_drop_total" {
   .metric_type = "network_tx_dropped"
   .value       = .counter.value
   .interface   = interface
-  .host        = hostname
+  .host        = .hostname
 } else {
   abort
 }
@@ -808,16 +894,8 @@ if .name == "network_receive_bytes_total" {
 # Storage/Filesystem metrics transform
 [transforms.format_storage]
 type   = "remap"
-inputs = ["rewrite_mem_names"]
+inputs = ["enrich_hostname"]
 source = '''
-hostname = if !is_null(.host) {
-             .host
-           } else if !is_null(.tags.host) {
-             .tags.host
-           } else {
-             get_env_var("HOSTNAME") ?? "unknown-host"
-           }
-
 filesystem = .tags.filesystem
 device = .tags.device
 
@@ -826,29 +904,29 @@ if .name == "filesystem_total_bytes" {
   .value       = .gauge.value
   .filesystem  = filesystem
   .device      = device
-  .host        = hostname
+  .host        = .hostname
 } else if .name == "filesystem_used_bytes" {
   .metric_type = "disk_used"
   .value       = .gauge.value
   .filesystem  = filesystem
   .device      = device
-  .host        = hostname
+  .host        = .hostname
 } else if .name == "filesystem_free_bytes" {
   .metric_type = "disk_free"
   .value       = .gauge.value
   .filesystem  = filesystem
   .device      = device
-  .host        = hostname
+  .host        = .hostname
 } else if .name == "disk_read_bytes_total" {
   .metric_type = "disk_read_bytes"
   .value       = .counter.value
   .device      = device
-  .host        = hostname
+  .host        = .hostname
 } else if .name == "disk_written_bytes_total" {
   .metric_type = "disk_write_bytes"
   .value       = .counter.value
   .device      = device
-  .host        = hostname
+  .host        = .hostname
 } else {
   abort
 }
@@ -859,44 +937,36 @@ if .name == "filesystem_total_bytes" {
 # System uptime and load metrics transform
 [transforms.format_system]
 type   = "remap"
-inputs = ["rewrite_mem_names"]
+inputs = ["enrich_hostname"]
 source = '''
-hostname = if !is_null(.host) {
-             .host
-           } else if !is_null(.tags.host) {
-             .tags.host
-           } else {
-             get_env_var("HOSTNAME") ?? "unknown-host"
-           }
-
 if .name == "uptime" {
   .metric_type = "uptime"
   .value       = .gauge.value
-  .host        = hostname
+  .host        = .hostname
 } else if .name == "boot_time" {
   .metric_type = "boot_time"
   .value       = .gauge.value
-  .host        = hostname
+  .host        = .hostname
 } else if .name == "load1" {
   .metric_type = "load_1min"
   .value       = .gauge.value
-  .host        = hostname
+  .host        = .hostname
 } else if .name == "load5" {
   .metric_type = "load_5min"
   .value       = .gauge.value
-  .host        = hostname
+  .host        = .hostname
 } else if .name == "load15" {
   .metric_type = "load_15min"
   .value       = .gauge.value
-  .host        = hostname
+  .host        = .hostname
 } else if .name == "host_logical_cpus" {
   .metric_type = "cpu_logical_count"
   .value       = .gauge.value
-  .host        = hostname
+  .host        = .hostname
 } else if .name == "host_physical_cpus" {
   .metric_type = "cpu_physical_count"
   .value       = .gauge.value
-  .host        = hostname
+  .host        = .hostname
 } else {
   abort
 }
@@ -979,9 +1049,9 @@ EOF
     log SUCCESS "Vector configuration complete"
 }
 
-###############################################################################
-#                        Web Server Detection                                 #
-###############################################################################
+# ============================================================================
+# Web Server Detection
+# ============================================================================
 
 detect_existing_webserver() {
     log INFO "Checking for existing web server..."
@@ -1053,17 +1123,17 @@ determine_installation_mode() {
     if [ -n "$EXISTING_WEBSERVER" ] && [ "$EXISTING_WEBSERVER" != "unknown" ]; then
         SELECTED_MODE="proxy"
         log INFO "Installation mode: proxy (detected ${EXISTING_WEBSERVER})"
-    else
-        SELECTED_MODE="standalone"
-        log INFO "Installation mode: standalone (no web server detected)"
+        return
     fi
 
-    return 0
+    # Default to standalone
+    SELECTED_MODE="standalone"
+    log INFO "Installation mode: standalone (no web server detected)"
 }
 
-###############################################################################
-#                           TLS Certificate Setup                             #
-###############################################################################
+# ============================================================================
+# TLS Certificate Setup
+# ============================================================================
 
 setup_tls() {
     log STEP "Setting up TLS Certificates"
@@ -1078,24 +1148,11 @@ setup_tls() {
         log WARNING "Domain does not resolve. Please ensure DNS is configured correctly."
         log WARNING "Certificate acquisition may fail if DNS is not properly configured."
 
-        # Check environment variable first
-        if [ -n "${ACTVT_CONTINUE_WITHOUT_DNS:-}" ]; then
-            if [[ "${ACTVT_CONTINUE_WITHOUT_DNS}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
-                log WARNING "Continuing without DNS resolution (ACTVT_CONTINUE_WITHOUT_DNS=yes)"
-            else
-                error_exit "DNS not configured (ACTVT_CONTINUE_WITHOUT_DNS=${ACTVT_CONTINUE_WITHOUT_DNS})"
-            fi
-        # In non-interactive mode, fail by default
-        elif ! is_interactive; then
-            error_exit "DNS not configured (non-interactive mode). Set ACTVT_CONTINUE_WITHOUT_DNS=yes to override"
-        # Interactive mode - prompt user
-        else
-            read -p "Continue anyway? [y/N] " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                error_exit "Please configure DNS and try again"
-            fi
+        # Prompt to continue without DNS (default: no)
+        if ! prompt_yes_no "ACTVT_CONTINUE_WITHOUT_DNS" "Continue anyway?" "no"; then
+            error_exit "Please configure DNS and try again"
         fi
+        log WARNING "Continuing without DNS resolution"
     fi
 
     # Install Certbot
@@ -1125,23 +1182,8 @@ setup_tls() {
     if [ -d "/etc/letsencrypt/live/${domain}" ]; then
         log INFO "Certificate for domain already exists"
 
-        # Check environment variable first
-        local reuse_cert="yes"
-        if [ -n "${ACTVT_REUSE_CERT:-}" ]; then
-            reuse_cert="${ACTVT_REUSE_CERT}"
-        # In non-interactive mode, reuse by default
-        elif ! is_interactive; then
-            reuse_cert="yes"
-        # Interactive mode - prompt user
-        else
-            read -p "Reuse existing certificate? [Y/n] " -n 1 -r
-            echo
-            if [[ $REPLY =~ ^[Nn]$ ]]; then
-                reuse_cert="no"
-            fi
-        fi
-
-        if [[ "${reuse_cert}" =~ ^[Yy]([Ee][Ss])?$ ]] || [[ "${reuse_cert}" == "yes" ]]; then
+        # Prompt to reuse existing certificate (default: yes)
+        if prompt_yes_no "ACTVT_REUSE_CERT" "Reuse existing certificate?" "yes"; then
             progress "Using existing certificate"
         else
             progress "Obtaining new certificate..."
@@ -1261,9 +1303,9 @@ RENEWAL_EOF
     log SUCCESS "TLS certificates configured successfully"
 }
 
-###############################################################################
-#                           mTLS Certificate Setup                            #
-###############################################################################
+# ============================================================================
+# mTLS Certificate Setup
+# ============================================================================
 
 setup_mtls() {
     log STEP "Setting up mTLS Client Authentication"
@@ -1288,23 +1330,8 @@ setup_mtls() {
     if [ -f "${VECTOR_MTLS_DIR}/ca.crt" ] && [ -f "${VECTOR_MTLS_DIR}/ca.key" ]; then
         log INFO "mTLS CA certificate already exists"
 
-        # Check environment variable first
-        local reuse_ca="yes"
-        if [ -n "${ACTVT_REUSE_MTLS_CA:-}" ]; then
-            reuse_ca="${ACTVT_REUSE_MTLS_CA}"
-        # In non-interactive mode, reuse by default
-        elif ! is_interactive; then
-            reuse_ca="yes"
-        # Interactive mode - prompt user
-        else
-            read -p "Reuse existing mTLS CA certificate? [Y/n] " -n 1 -r
-            echo
-            if [[ $REPLY =~ ^[Nn]$ ]]; then
-                reuse_ca="no"
-            fi
-        fi
-
-        if [[ "${reuse_ca}" =~ ^[Yy]([Ee][Ss])?$ ]] || [[ "${reuse_ca}" == "yes" ]]; then
+        # Prompt to reuse existing mTLS CA (default: yes)
+        if prompt_yes_no "ACTVT_REUSE_MTLS_CA" "Reuse existing mTLS CA certificate?" "yes"; then
             progress "Using existing mTLS CA certificate"
         else
             progress "Generating new mTLS CA certificate..."
@@ -1330,21 +1357,8 @@ setup_mtls() {
     if [ -f "${VECTOR_MTLS_CLIENTS_DIR}/${client_cn}.crt" ]; then
         log INFO "Client certificate '${client_cn}' already exists"
 
-        # Check if we should regenerate
-        local regen_client="no"
-        if [ -n "${ACTVT_REGEN_CLIENT_CERT:-}" ]; then
-            regen_client="${ACTVT_REGEN_CLIENT_CERT}"
-        elif ! is_interactive; then
-            regen_client="no"
-        else
-            read -p "Regenerate client certificate '${client_cn}'? [y/N] " -n 1 -r
-            echo
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                regen_client="yes"
-            fi
-        fi
-
-        if [[ "${regen_client}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        # Prompt to regenerate client certificate (default: no)
+        if prompt_yes_no "ACTVT_REGEN_CLIENT_CERT" "Regenerate client certificate '${client_cn}'?" "no"; then
             generate_mtls_client_cert "${client_cn}"
         else
             progress "Using existing client certificate"
@@ -1360,13 +1374,11 @@ setup_mtls() {
     progress "Creating client certificate bundle..."
     cd "${VECTOR_MTLS_DIR}"
     tar -czf "${client_cn}-bundle.tar.gz" \
-        ca.crt \
         "clients/${client_cn}.crt" \
-        "clients/${client_cn}-chain.crt" \
         "clients/${client_cn}.key" \
         >> "${ACTVT_LOG_FILE}" 2>&1
 
-    chmod 600 "${client_cn}-bundle.tar.gz"
+    chmod 644 "${client_cn}-bundle.tar.gz"
     progress "Client certificate bundle created: ${VECTOR_MTLS_DIR}/${client_cn}-bundle.tar.gz"
 
     # Create client certificate generation script
@@ -1397,9 +1409,8 @@ generate_mtls_ca() {
         >> "${ACTVT_LOG_FILE}" 2>&1 || \
         error_exit "Failed to create CA certificate"
 
-    # Set proper permissions
-    chmod 600 "$ca_key"
-    chmod 644 "$ca_crt"
+    # Set proper permissions (CA key must be protected)
+    set_cert_permissions "$ca_crt" "$ca_key" "vector:vector"
 
     progress "CA certificate generated successfully"
 }
@@ -1435,23 +1446,12 @@ generate_mtls_client_cert() {
         -CAkey "$ca_key" \
         -CAcreateserial \
         -out "$client_crt" \
-        -extfile <(printf "extendedKeyUsage=clientAuth") \
+        -extfile <(printf "basicConstraints=CA:FALSE\nextendedKeyUsage=clientAuth") \
         >> "${ACTVT_LOG_FILE}" 2>&1 || \
         error_exit "Failed to sign client certificate"
 
-    # Create chained certificate file (client cert + CA cert)
-    local client_chain="${VECTOR_MTLS_CLIENTS_DIR}/${client_name}-chain.crt"
-    progress "Creating certificate chain file..."
-    cat "$client_crt" "$ca_crt" > "$client_chain" || \
-        error_exit "Failed to create certificate chain"
-
-    # Set proper permissions
-    chmod 644 "$client_crt"
-    chmod 644 "$client_chain"
-    chmod 600 "$client_key"
-
-    # Set proper ownership
-    chown vector:vector "$client_crt" "$client_chain" "$client_key" 2>/dev/null || true
+    # Set proper permissions and ownership
+    set_cert_permissions "$client_crt" "$client_key" "vector:vector"
 
     # Clean up CSR
     rm -f "$client_csr"
@@ -1539,24 +1539,15 @@ openssl x509 -req -days "${CLIENT_DAYS}" -sha256 \
     -CAkey "$CA_KEY" \
     -CAcreateserial \
     -out "$CLIENT_CRT" \
-    -extfile <(printf "extendedKeyUsage=clientAuth") 2>/dev/null || {
+    -extfile <(printf "basicConstraints=CA:FALSE\nextendedKeyUsage=clientAuth") 2>/dev/null || {
     echo "ERROR: Failed to sign certificate"
-    exit 1
-}
-
-# Create chained certificate file
-echo "→ Creating certificate chain file..."
-CLIENT_CHAIN="${CLIENT_DIR}/${CLIENT_NAME}-chain.crt"
-cat "$CLIENT_CRT" "$CA_CRT" > "$CLIENT_CHAIN" || {
-    echo "ERROR: Failed to create certificate chain"
     exit 1
 }
 
 # Set permissions
 chmod 644 "$CLIENT_CRT"
-chmod 644 "$CLIENT_CHAIN"
 chmod 600 "$CLIENT_KEY"
-chown vector:vector "$CLIENT_CRT" "$CLIENT_CHAIN" "$CLIENT_KEY" 2>/dev/null || true
+chown vector:vector "$CLIENT_CRT" "$CLIENT_KEY" 2>/dev/null || true
 
 # Clean up CSR
 rm -f "$CLIENT_CSR"
@@ -1565,19 +1556,16 @@ rm -f "$CLIENT_CSR"
 echo "→ Creating distribution bundle..."
 cd "$MTLS_DIR"
 tar -czf "$BUNDLE" \
-    ca.crt \
     "clients/${CLIENT_NAME}.crt" \
-    "clients/${CLIENT_NAME}-chain.crt" \
     "clients/${CLIENT_NAME}.key" 2>/dev/null || {
     echo "ERROR: Failed to create bundle"
     exit 1
 }
-chmod 600 "$BUNDLE"
+chmod 644 "$BUNDLE"
 
 echo ""
 echo "✓ Client certificate generated successfully"
 echo "✓ Certificate: ${CLIENT_CRT}"
-echo "✓ Certificate chain: ${CLIENT_CHAIN}"
 echo "✓ Private key: ${CLIENT_KEY}"
 echo "✓ Bundle: ${BUNDLE}"
 echo ""
@@ -1590,11 +1578,16 @@ echo ""
 echo "On the client machine, extract the bundle:"
 echo "  tar -xzf ${CLIENT_NAME}-bundle.tar.gz"
 echo ""
-echo "Usage (use the -chain.crt file for mTLS):"
-echo "  curl --cert clients/${CLIENT_NAME}-chain.crt \\"
-echo "       --key clients/${CLIENT_NAME}.key \\"
-echo "       --cacert ca.crt \\"
-echo "       https://your-domain/actvt/health"
+echo "Usage (connect with client certificate):"
+echo "  # Direct connection (standalone mode)"
+echo "  wscat -c wss://your-domain:4096 \\"
+echo "    --cert clients/${CLIENT_NAME}.crt \\"
+echo "    --key clients/${CLIENT_NAME}.key"
+echo ""
+echo "  # Via proxy (proxy mode)"
+echo "  wscat -c wss://your-domain/actvt \\"
+echo "    --cert clients/${CLIENT_NAME}.crt \\"
+echo "    --key clients/${CLIENT_NAME}.key"
 echo ""
 GENCERT_EOF
 
@@ -1602,9 +1595,9 @@ GENCERT_EOF
     progress "Client certificate generator created at ${script_path}"
 }
 
-###############################################################################
-#                       Nginx Reverse Proxy Configuration                     #
-###############################################################################
+# ============================================================================
+# Nginx Reverse Proxy Configuration
+# ============================================================================
 
 configure_nginx_proxy() {
     log STEP "Configuring Nginx Reverse Proxy"
@@ -1803,9 +1796,9 @@ NGINX_EOF
     log INFO "Vector WebSocket accessible at: wss://${domain}/actvt"
 }
 
-###############################################################################
-#                          Firewall Configuration                             #
-###############################################################################
+# ============================================================================
+# Firewall Configuration
+# ============================================================================
 
 configure_firewall() {
     log STEP "Configuring Firewall"
@@ -1847,43 +1840,12 @@ configure_firewall() {
             # Enable UFW if not already enabled
             if ! ufw status | grep -q "Status: active"; then
                 log WARNING "UFW is not active. Enabling UFW..."
-                # Allow SSH first to prevent lockout
-                ufw allow 22/tcp >> "${ACTVT_LOG_FILE}" 2>&1
+                ufw allow 22/tcp >> "${ACTVT_LOG_FILE}" 2>&1  # Allow SSH to prevent lockout
                 ufw --force enable >> "${ACTVT_LOG_FILE}" 2>&1
             fi
 
-            # Check which ports are already open
-            local port_80_open=false
-            local port_443_open=false
-            local port_vector_open=false
-
-            if ufw status | grep -qE "^80/tcp.*ALLOW"; then
-                port_80_open=true
-            fi
-            if ufw status | grep -qE "^443/tcp.*ALLOW"; then
-                port_443_open=true
-            fi
-            if ufw status | grep -qE "^${ACTVT_VECTOR_PORT}/tcp.*ALLOW"; then
-                port_vector_open=true
-            fi
-
-            # In proxy mode, ports 80/443 are likely already open
-            if [ "$SELECTED_MODE" = "proxy" ]; then
-                if [ "$port_80_open" = true ] && [ "$port_443_open" = true ]; then
-                    progress "Ports 80 and 443 already open (existing web server)"
-                else
-                    [ "$port_80_open" = false ] && ufw allow 80/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port 80"
-                    [ "$port_443_open" = false ] && ufw allow 443/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port 443"
-                fi
-                # In proxy mode, Vector port doesn't need to be exposed
-                progress "Skipping port ${ACTVT_VECTOR_PORT} (proxy mode - localhost only)"
-            else
-                # Standalone mode - open all ports
-                [ "$port_80_open" = false ] && ufw allow 80/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port 80"
-                [ "$port_443_open" = false ] && ufw allow 443/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port 443"
-                [ "$port_vector_open" = false ] && ufw allow ${ACTVT_VECTOR_PORT}/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port ${ACTVT_VECTOR_PORT}"
-            fi
-
+            # Configure required ports
+            configure_firewall_ports "ufw"
             progress "Firewall rules configured"
             ;;
 
@@ -1895,38 +1857,8 @@ configure_firewall() {
                 systemctl start firewalld
             fi
 
-            # Check which ports are already open
-            local port_80_open=false
-            local port_443_open=false
-            local port_vector_open=false
-
-            if firewall-cmd --list-ports 2>/dev/null | grep -q "80/tcp"; then
-                port_80_open=true
-            fi
-            if firewall-cmd --list-ports 2>/dev/null | grep -q "443/tcp"; then
-                port_443_open=true
-            fi
-            if firewall-cmd --list-ports 2>/dev/null | grep -q "${ACTVT_VECTOR_PORT}/tcp"; then
-                port_vector_open=true
-            fi
-
-            # In proxy mode, ports 80/443 are likely already open
-            if [ "$SELECTED_MODE" = "proxy" ]; then
-                if [ "$port_80_open" = true ] && [ "$port_443_open" = true ]; then
-                    progress "Ports 80 and 443 already open (existing web server)"
-                else
-                    [ "$port_80_open" = false ] && firewall-cmd --permanent --add-port=80/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port 80"
-                    [ "$port_443_open" = false ] && firewall-cmd --permanent --add-port=443/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port 443"
-                fi
-                # In proxy mode, Vector port doesn't need to be exposed
-                progress "Skipping port ${ACTVT_VECTOR_PORT} (proxy mode - localhost only)"
-            else
-                # Standalone mode - open all ports
-                [ "$port_80_open" = false ] && firewall-cmd --permanent --add-port=80/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port 80"
-                [ "$port_443_open" = false ] && firewall-cmd --permanent --add-port=443/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port 443"
-                [ "$port_vector_open" = false ] && firewall-cmd --permanent --add-port=${ACTVT_VECTOR_PORT}/tcp >> "${ACTVT_LOG_FILE}" 2>&1 && progress "Opened port ${ACTVT_VECTOR_PORT}"
-            fi
-
+            # Configure required ports
+            configure_firewall_ports "firewalld"
             firewall-cmd --reload >> "${ACTVT_LOG_FILE}" 2>&1
             progress "Firewall rules configured"
             ;;
@@ -1934,36 +1866,10 @@ configure_firewall() {
         iptables)
             progress "Configuring iptables..."
 
-            # In proxy mode, ports 80/443 are likely already open
-            if [ "$SELECTED_MODE" = "proxy" ]; then
-                # Check if rules already exist before adding
-                if ! iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null; then
-                    iptables -I INPUT -p tcp --dport 80 -j ACCEPT
-                    progress "Opened port 80"
-                else
-                    progress "Port 80 already open"
-                fi
+            # Configure required ports
+            configure_firewall_ports "iptables"
 
-                if ! iptables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null; then
-                    iptables -I INPUT -p tcp --dport 443 -j ACCEPT
-                    progress "Opened port 443"
-                else
-                    progress "Port 443 already open"
-                fi
-
-                # In proxy mode, Vector port doesn't need to be exposed
-                progress "Skipping port ${ACTVT_VECTOR_PORT} (proxy mode - localhost only)"
-            else
-                # Standalone mode - add all rules if they don't exist
-                iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || \
-                    iptables -I INPUT -p tcp --dport 80 -j ACCEPT
-                iptables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || \
-                    iptables -I INPUT -p tcp --dport 443 -j ACCEPT
-                iptables -C INPUT -p tcp --dport ${ACTVT_VECTOR_PORT} -j ACCEPT 2>/dev/null || \
-                    iptables -I INPUT -p tcp --dport ${ACTVT_VECTOR_PORT} -j ACCEPT
-            fi
-
-            # Try to save rules
+            # Save rules for persistence
             if command -v iptables-save &> /dev/null; then
                 mkdir -p /etc/iptables 2>/dev/null || true
                 iptables-save > /etc/iptables/rules.v4 2>/dev/null || \
@@ -1977,9 +1883,9 @@ configure_firewall() {
     log SUCCESS "Firewall configuration complete"
 }
 
-###############################################################################
-#                          Service Management                                 #
-###############################################################################
+# ============================================================================
+# Service Management
+# ============================================================================
 
 start_vector_service() {
     log STEP "Starting Vector Service"
@@ -2075,9 +1981,9 @@ OVERRIDE_EOF
     log SUCCESS "Vector service started and enabled"
 }
 
-###############################################################################
-#                          Validation & Testing                               #
-###############################################################################
+# ============================================================================
+# Validation & Testing
+# ============================================================================
 
 validate_installation() {
     log STEP "Validating Installation"
@@ -2174,15 +2080,22 @@ validate_installation() {
         echo -e "  ${CYAN}${VECTOR_MTLS_DIR}/${client_cn}-bundle.tar.gz${NC}"
         echo -e ""
         echo -e "  Download this bundle to your local machine:"
-        echo -e "  ${CYAN}scp root@${domain:-YOUR_SERVER}:${VECTOR_MTLS_DIR}/${client_cn}-bundle.tar.gz ./${NC}"
+        echo -e "  ${CYAN}scp username@${domain:-YOUR_SERVER}:${VECTOR_MTLS_DIR}/${client_cn}-bundle.tar.gz ./${NC}"
+        echo -e ""
+        echo -e "  ${YELLOW}Note: If you get a permission error, run this on the server first:${NC}"
+        echo -e "  ${CYAN}sudo chmod 644 ${VECTOR_MTLS_DIR}/${client_cn}-bundle.tar.gz${NC}"
         echo -e ""
         echo -e "  Extract the bundle to get the required certificates:"
         echo -e "  ${CYAN}tar -xzf ${client_cn}-bundle.tar.gz${NC}"
         echo -e ""
         echo -e "  Files included:"
-        echo -e "    • ${CYAN}ca.crt${NC} - CA certificate (for verification)"
         echo -e "    • ${CYAN}clients/${client_cn}.crt${NC} - Client certificate"
         echo -e "    • ${CYAN}clients/${client_cn}.key${NC} - Client private key"
+        echo -e ""
+        echo -e "  ${BOLD}Connection example:${NC}"
+        echo -e "    ${CYAN}wscat -c wss://${domain:-YOUR_DOMAIN}:4096 \\${NC}"
+        echo -e "      ${CYAN}--cert clients/${client_cn}.crt \\${NC}"
+        echo -e "      ${CYAN}--key clients/${client_cn}.key${NC}"
         echo
     else
         echo -e "${BOLD}Security Warning:${NC}"
@@ -2194,7 +2107,7 @@ validate_installation() {
     echo -e "${BOLD}Next Steps:${NC}"
     echo -e "  1. Download the client certificate bundle (see above)"
     echo -e "  2. Open Actvt on your Mac"
-    echo -e "  3. Go to Settings → Remote Servers"
+    echo -e "  3. Go to Remote Servers → Add Server"
     echo -e "  4. Add a new server with the WebSocket URL and certificates"
     echo -e "  5. Start monitoring your remote server!"
     echo
@@ -2220,9 +2133,9 @@ validate_installation() {
     echo
 }
 
-###############################################################################
-#                              Main Execution                                 #
-###############################################################################
+# ============================================================================
+# Main Execution
+# ============================================================================
 
 main() {
     # Clear screen and show banner
@@ -2258,7 +2171,7 @@ main() {
 
     # Initialize log file
     touch "${ACTVT_LOG_FILE}" 2>/dev/null || ACTVT_LOG_FILE="/tmp/actvt-install.log"
-    chmod 600 "${ACTVT_LOG_FILE}"
+    chmod 644 "${ACTVT_LOG_FILE}"
 
     log INFO "Starting Actvt installation (version ${SCRIPT_VERSION})"
     log INFO "Log file: ${ACTVT_LOG_FILE}"
