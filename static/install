@@ -1360,9 +1360,7 @@ setup_mtls() {
     progress "Creating client certificate bundle..."
     cd "${VECTOR_MTLS_DIR}"
     tar -czf "${client_cn}-bundle.tar.gz" \
-        ca.crt \
         "clients/${client_cn}.crt" \
-        "clients/${client_cn}-chain.crt" \
         "clients/${client_cn}.key" \
         >> "${ACTVT_LOG_FILE}" 2>&1
 
@@ -1439,19 +1437,12 @@ generate_mtls_client_cert() {
         >> "${ACTVT_LOG_FILE}" 2>&1 || \
         error_exit "Failed to sign client certificate"
 
-    # Create chained certificate file (client cert + CA cert)
-    local client_chain="${VECTOR_MTLS_CLIENTS_DIR}/${client_name}-chain.crt"
-    progress "Creating certificate chain file..."
-    cat "$client_crt" "$ca_crt" > "$client_chain" || \
-        error_exit "Failed to create certificate chain"
-
     # Set proper permissions
     chmod 644 "$client_crt"
-    chmod 644 "$client_chain"
-    chmod 644 "$client_key"
+    chmod 600 "$client_key"
 
     # Set proper ownership
-    chown vector:vector "$client_crt" "$client_chain" "$client_key" 2>/dev/null || true
+    chown vector:vector "$client_crt" "$client_key" 2>/dev/null || true
 
     # Clean up CSR
     rm -f "$client_csr"
@@ -1544,19 +1535,10 @@ openssl x509 -req -days "${CLIENT_DAYS}" -sha256 \
     exit 1
 }
 
-# Create chained certificate file
-echo "→ Creating certificate chain file..."
-CLIENT_CHAIN="${CLIENT_DIR}/${CLIENT_NAME}-chain.crt"
-cat "$CLIENT_CRT" "$CA_CRT" > "$CLIENT_CHAIN" || {
-    echo "ERROR: Failed to create certificate chain"
-    exit 1
-}
-
 # Set permissions
 chmod 644 "$CLIENT_CRT"
-chmod 644 "$CLIENT_CHAIN"
-chmod 644 "$CLIENT_KEY"
-chown vector:vector "$CLIENT_CRT" "$CLIENT_CHAIN" "$CLIENT_KEY" 2>/dev/null || true
+chmod 600 "$CLIENT_KEY"
+chown vector:vector "$CLIENT_CRT" "$CLIENT_KEY" 2>/dev/null || true
 
 # Clean up CSR
 rm -f "$CLIENT_CSR"
@@ -1565,9 +1547,7 @@ rm -f "$CLIENT_CSR"
 echo "→ Creating distribution bundle..."
 cd "$MTLS_DIR"
 tar -czf "$BUNDLE" \
-    ca.crt \
     "clients/${CLIENT_NAME}.crt" \
-    "clients/${CLIENT_NAME}-chain.crt" \
     "clients/${CLIENT_NAME}.key" 2>/dev/null || {
     echo "ERROR: Failed to create bundle"
     exit 1
@@ -1577,7 +1557,6 @@ chmod 644 "$BUNDLE"
 echo ""
 echo "✓ Client certificate generated successfully"
 echo "✓ Certificate: ${CLIENT_CRT}"
-echo "✓ Certificate chain: ${CLIENT_CHAIN}"
 echo "✓ Private key: ${CLIENT_KEY}"
 echo "✓ Bundle: ${BUNDLE}"
 echo ""
@@ -1590,11 +1569,16 @@ echo ""
 echo "On the client machine, extract the bundle:"
 echo "  tar -xzf ${CLIENT_NAME}-bundle.tar.gz"
 echo ""
-echo "Usage (use the -chain.crt file for mTLS):"
-echo "  curl --cert clients/${CLIENT_NAME}-chain.crt \\"
-echo "       --key clients/${CLIENT_NAME}.key \\"
-echo "       --cacert ca.crt \\"
-echo "       https://your-domain/actvt/health"
+echo "Usage (connect with client certificate):"
+echo "  # Direct connection (standalone mode)"
+echo "  wscat -c wss://your-domain:4096 \\"
+echo "    --cert clients/${CLIENT_NAME}.crt \\"
+echo "    --key clients/${CLIENT_NAME}.key"
+echo ""
+echo "  # Via proxy (proxy mode)"
+echo "  wscat -c wss://your-domain/actvt \\"
+echo "    --cert clients/${CLIENT_NAME}.crt \\"
+echo "    --key clients/${CLIENT_NAME}.key"
 echo ""
 GENCERT_EOF
 
@@ -2174,15 +2158,22 @@ validate_installation() {
         echo -e "  ${CYAN}${VECTOR_MTLS_DIR}/${client_cn}-bundle.tar.gz${NC}"
         echo -e ""
         echo -e "  Download this bundle to your local machine:"
-        echo -e "  ${CYAN}scp root@${domain:-YOUR_SERVER}:${VECTOR_MTLS_DIR}/${client_cn}-bundle.tar.gz ./${NC}"
+        echo -e "  ${CYAN}scp username@${domain:-YOUR_SERVER}:${VECTOR_MTLS_DIR}/${client_cn}-bundle.tar.gz ./${NC}"
+        echo -e ""
+        echo -e "  ${YELLOW}Note: If you get a permission error, run this on the server first:${NC}"
+        echo -e "  ${CYAN}sudo chmod 644 ${VECTOR_MTLS_DIR}/${client_cn}-bundle.tar.gz${NC}"
         echo -e ""
         echo -e "  Extract the bundle to get the required certificates:"
         echo -e "  ${CYAN}tar -xzf ${client_cn}-bundle.tar.gz${NC}"
         echo -e ""
         echo -e "  Files included:"
-        echo -e "    • ${CYAN}ca.crt${NC} - CA certificate (for verification)"
         echo -e "    • ${CYAN}clients/${client_cn}.crt${NC} - Client certificate"
         echo -e "    • ${CYAN}clients/${client_cn}.key${NC} - Client private key"
+        echo -e ""
+        echo -e "  ${BOLD}Connection example:${NC}"
+        echo -e "    ${CYAN}wscat -c wss://${domain:-YOUR_DOMAIN}:4096 \\${NC}"
+        echo -e "      ${CYAN}--cert clients/${client_cn}.crt \\${NC}"
+        echo -e "      ${CYAN}--key clients/${client_cn}.key${NC}"
         echo
     else
         echo -e "${BOLD}Security Warning:${NC}"
