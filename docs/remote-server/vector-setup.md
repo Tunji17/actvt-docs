@@ -115,12 +115,12 @@ scrape_interval_secs = 1
 type    = "exec"
 command = [
   "sh", "-c",
-  "echo \"{\\\"os\\\":\\\"$(grep PRETTY_NAME /etc/os-release | cut -d'=' -f2 | tr -d '\\\"')\\\",\\\"arch\\\":\\\"$(uname -m)\\\",\\\"domain\\\":\\\"$(hostname -f 2>/dev/null || hostname)\\\",\\\"ipv4\\\":\\\"$(ip route get 1 2>/dev/null | awk '{print $7;exit}' || hostname -I 2>/dev/null | awk '{print $1}' || echo 'unknown')\\\"}\""
+  "echo \"{\\\"os\\\":\\\"$(grep PRETTY_NAME /etc/os-release | cut -d'=' -f2 | tr -d '\\\"')\\\",\\\"arch\\\":\\\"$(uname -m)\\\",\\\"domain\\\":\\\"$(hostname -f 2>/dev/null || hostname)\\\",\\\"ipv4\\\":\\\"$(ip route get 1 2>/dev/null | awk '{print $7;exit}' || hostname -I 2>/dev/null | awk '{print $1}' || echo 'unknown')\\\",\\\"ipv4_public\\\":\\\"$(curl -s --max-time 5 ifconfig.me || curl -s --max-time 5 icanhazip.com || echo 'unknown')\\\"}\""
 ]
 mode = "scheduled"
 
 [sources.system_info.scheduled]
-exec_interval_secs = 300
+exec_interval_secs = 15
 
 # Optional: GPU metrics (requires nvidia-smi)
 [sources.gpu_metrics]
@@ -152,6 +152,7 @@ parsed = parse_json!(.message)
 .arch        = parsed.arch
 .domain      = parsed.domain
 .ipv4        = parsed.ipv4
+.ipv4_public = parsed.ipv4_public
 .host        = get_env_var("HOSTNAME") ?? "unknown-host"
 .timestamp   = format_timestamp!(now(), format: "%+")
 '''
@@ -536,7 +537,7 @@ enabled = true
   - Network interface statistics
   - System host information
   - Load averages
-- **`system_info`**: Collects static system information every 5 minutes (OS, architecture, domain, IPv4 address)
+- **`system_info`**: Collects static system information every 15 seconds (OS, architecture, domain, IPv4 address)
 - **`gpu_metrics`**: Runs nvidia-smi command for comprehensive GPU metrics including utilization, memory, temperature, power, clocks, encoder/decoder usage, fan speed, and performance state (optional)
 
 #### Transforms Section
