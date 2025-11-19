@@ -19,6 +19,7 @@ curl -L https://actvt.io/install | bash
 Notes:
 - ACTVT_DOMAIN and ACTVT_EMAIL are required.
 - The script auto-detects if nginx is present and will run in proxy mode behind nginx; otherwise it runs in standalone mode.
+- See [Installation Modes](installation-modes.md) for detailed explanation of auto/standalone/proxy modes.
 
 ## What the Script Does
 
@@ -128,6 +129,12 @@ For automated deployments, CI/CD pipelines, or infrastructure-as-code, you can p
 | `ACTVT_REUSE_CERT` | Reuse existing certificates if present | `yes` | No |
 | `ACTVT_CONTINUE_WITHOUT_DNS` | Continue if DNS resolution fails | `no` | No |
 | `ACTVT_CONFIGURE_FIREWALL` | Configure firewall rules (UFW/firewalld/iptables) | `yes` | No |
+| `ACTVT_ENABLE_MTLS` | Enable mTLS client certificate verification | `no` | No |
+| `ACTVT_MTLS_CA_DAYS` | CA certificate validity in days | `3650` (10 years) | No |
+| `ACTVT_MTLS_CLIENT_DAYS` | Client certificate validity in days | `365` (1 year) | No |
+| `ACTVT_MTLS_CLIENT_CN` | Client certificate common name | `actvt-client-001` | No |
+| `ACTVT_REUSE_MTLS_CA` | Reuse existing mTLS CA certificate | `yes` | No |
+| `ACTVT_REGEN_CLIENT_CERT` | Regenerate client certificate | `no` | No |
 | `ACTVT_NON_INTERACTIVE` | Force non-interactive mode | auto-detect | No |
 
 ### Basic Non-Interactive Installation
@@ -246,6 +253,45 @@ curl -L https://actvt.io/install | bash
 ```
 
 **Note**: Ensure your cloud security groups allow inbound traffic on ports 80, 443, and 4096.
+
+### mTLS (Mutual TLS) Installation
+
+For enhanced security with client certificate authentication:
+
+```bash
+export ACTVT_DOMAIN="monitor.yourdomain.com"
+export ACTVT_EMAIL="admin@yourdomain.com"
+export ACTVT_ENABLE_MTLS=yes
+curl -L https://actvt.io/install | bash
+```
+
+With custom certificate validity periods:
+
+```bash
+export ACTVT_DOMAIN="monitor.yourdomain.com"
+export ACTVT_EMAIL="admin@yourdomain.com"
+export ACTVT_ENABLE_MTLS=yes
+export ACTVT_MTLS_CA_DAYS=7300          # CA valid for 20 years
+export ACTVT_MTLS_CLIENT_DAYS=730       # Client cert valid for 2 years
+export ACTVT_MTLS_CLIENT_CN="my-laptop"
+curl -L https://actvt.io/install | bash
+```
+
+After installation, download the client certificate bundle:
+
+```bash
+# On the server, make bundle accessible
+sudo chmod 644 /etc/vector/certs/mtls/actvt-client-001-bundle.tar.gz
+
+# Download to your Mac
+scp username@monitor.yourdomain.com:/etc/vector/certs/mtls/actvt-client-001-bundle.tar.gz ~/Downloads/
+
+# Extract certificates
+cd ~/Downloads
+tar -xzf actvt-client-001-bundle.tar.gz
+```
+
+See the [mTLS Security Guide](mtls-security.md) for complete setup and usage instructions.
 
 ## Installation Progress
 

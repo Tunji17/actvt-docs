@@ -39,10 +39,24 @@ curl -L https://actvt.io/install | bash
 - **Free Options**: Use services like Cloudflare, Namecheap, or DuckDNS
 
 #### Port Access
+
+Port requirements depend on installation mode:
+
+**Standalone Mode** (dedicated monitoring server):
 - **Port 22**: SSH access for initial setup
-- **Port 80**: HTTP access for Let's Encrypt certificate verification
-- **Port 4096**: WebSocket server for Actvt connections
+- **Port 80**: HTTP for Let's Encrypt certificate verification
+- **Port 443**: HTTPS (optional, for future use)
+- **Port 4096**: WebSocket Secure for Actvt connections
 - **Firewall**: Ability to configure firewall rules
+
+**Proxy Mode** (behind nginx):
+- **Port 22**: SSH access for initial setup
+- **Port 80**: HTTP for nginx and Let's Encrypt
+- **Port 443**: HTTPS for nginx (Actvt connects via /actvt path)
+- **Port 4096**: NOT exposed (Vector listens on localhost only)
+- **Firewall**: Ability to configure firewall rules
+
+See [Installation Modes](installation-modes.md) for detailed explanation of each mode.
 
 ## Software Prerequisites
 
@@ -61,6 +75,20 @@ If you want to monitor GPU metrics:
 - **NVIDIA GPU**: Any CUDA-compatible GPU
 - **NVIDIA Drivers**: Latest stable drivers installed
 - **nvidia-smi**: Command-line GPU monitoring tool (included with drivers)
+
+## Optional Enhanced Security (mTLS)
+If you want to require client certificates for connections:
+- **OpenSSL**: Certificate generation tool (usually pre-installed)
+- **wscat**: WebSocket testing tool for verifying mTLS (optional, for testing)
+- **Certificate Management**: Ability to distribute client certificates securely
+
+**Benefits of mTLS:**
+- Client certificate authentication
+- Prevent unauthorized connections
+- Support multiple team members with unique certificates
+- Certificate revocation capability
+
+See [mTLS Security Guide](mtls-security.md) for complete setup instructions.
 
 ## Testing Prerequisites
 

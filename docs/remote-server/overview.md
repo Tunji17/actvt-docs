@@ -2,13 +2,9 @@
 sidebar_position: 1
 ---
 
-# Remote Server Monitoring
+# Overview
 
-Actvt supports connecting to remote servers to monitor their performance in real-time alongside your local macOS system. This section provides complete setup instructions for monitoring remote Linux servers.
-
-## Overview
-
-Remote monitoring in Actvt works by:
+Actvt supports connecting to remote servers to monitor their performance in real-time alongside your local macOS system. This section provides complete setup instructions for monitoring remote Linux servers. Remote monitoring in Actvt works by:
 
 1. **Installing Vector** on your remote server to collect system metrics
 2. **Configuring a WebSocket server** to stream data securely on your remote server
@@ -74,6 +70,8 @@ This single command will:
 
 The installation takes approximately 3-5 minutes and handles all configuration automatically.
 
+See [Installation Modes](installation-modes.md) for detailed explanation of auto-detection and mode selection.
+
 ### Option 2: Manual Installation
 
 For advanced users who prefer manual control, follow the step-by-step guides below.
@@ -122,17 +120,26 @@ Solve common issues and verify your setup is working correctly.
 - All connections use TLS 1.2+ encryption
 - WebSocket Secure (WSS) protocol
 - Certificate validation required
+- Optional mTLS (mutual TLS) for client certificate authentication
 
 🔒 **Network Security**
 - In proxy mode, only ports 80/443 are exposed; Vector listens on 127.0.0.1
 - In standalone mode, port 4096 is exposed for WSS
 - Firewall rules can restrict source IPs
 - No inbound SSH required for monitoring
+- mTLS provides additional authentication layer
 
 🔒 **Data Security**
 - No sensitive data transmitted
 - Only system performance metrics
 - No file system access or commands
+
+🔒 **Enhanced Security with mTLS**
+- Require client certificates for connections
+- Prevent unauthorized access even with domain knowledge
+- Support for multiple client certificates
+- Certificate revocation capability
+- See [mTLS Security Guide](mtls-security.md) for details
 
 ## Quick Start Checklist
 

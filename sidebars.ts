@@ -30,10 +30,14 @@ const sidebars: SidebarsConfig = {
       label: 'Remote Server Setup',
       collapsed: false,
       items: [
+        'remote-server/overview',
         'remote-server/prerequisites',
         'remote-server/automated-install',
         'remote-server/vector-setup',
         'remote-server/tls-configuration',
+        'remote-server/mtls-security',
+        'remote-server/installation-modes',
+        'remote-server/state-management',
         'remote-server/troubleshooting',
         {
           type: 'category',

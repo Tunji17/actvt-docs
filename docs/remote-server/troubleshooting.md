@@ -1,5 +1,5 @@
 ---
-sidebar_position: 6
+sidebar_position: 9
 ---
 
 # Troubleshooting
@@ -413,6 +413,224 @@ sudo /etc/vector/renew-certs.sh
 # Check renewal script permissions
 ls -la /etc/vector/renew-certs.sh
 chmod +x /etc/vector/renew-certs.sh
+```
+
+## mTLS Issues
+
+### mTLS Connection Failures
+
+**"Certificate verification failed" with client certificate**
+
+```bash
+# Verify client certificate was signed by the correct CA
+sudo openssl verify -CAfile /etc/vector/certs/mtls/ca.crt \
+  /etc/vector/certs/mtls/clients/actvt-client-001.crt
+# Should output: OK
+
+# Check Vector mTLS configuration
+grep -A 2 "ca_file" /etc/vector/vector.toml
+
+# Verify CA certificate exists and is readable
+ls -la /etc/vector/certs/mtls/ca.crt
+```
+
+**"Permission denied" reading client certificates**
+
+```bash
+# Check client certificate permissions
+ls -la /etc/vector/certs/mtls/clients/
+
+# Fix permissions (server-side)
+sudo chown -R vector:vector /etc/vector/certs/mtls
+sudo chmod 644 /etc/vector/certs/mtls/ca.crt
+sudo chmod 600 /etc/vector/certs/mtls/ca.key
+sudo chmod 644 /etc/vector/certs/mtls/clients/*.crt
+sudo chmod 600 /etc/vector/certs/mtls/clients/*.key
+
+# Restart Vector
+sudo systemctl restart vector
+```
+
+**Testing mTLS connections**
+
+```bash
+# Test with wscat and client certificate
+# Standalone mode:
+wscat -c wss://monitor.yourdomain.com:4096 \
+  --cert clients/actvt-client-001.crt \
+  --key clients/actvt-client-001.key
+
+# Proxy mode:
+wscat -c wss://monitor.yourdomain.com/actvt \
+  --cert clients/actvt-client-001.crt \
+  --key clients/actvt-client-001.key
+
+# Test without certificate (should fail with mTLS enabled)
+wscat -c wss://monitor.yourdomain.com:4096
+# Expected: Connection rejected or closed
+```
+
+**Client certificate expired**
+
+```bash
+# Check client certificate expiration
+openssl x509 -in clients/actvt-client-001.crt -noout -enddate
+
+# Generate new client certificate on server
+sudo /etc/vector/certs/mtls/generate-client.sh actvt-client-001
+# Confirm overwrite: Y
+
+# Download new bundle
+scp username@server:/etc/vector/certs/mtls/actvt-client-001-bundle.tar.gz ~/Downloads/
+```
+
+### Nginx mTLS Configuration Issues
+
+**"496 SSL Certificate Required" when using proxy mode**
+
+This is expected when connecting without a client certificate. If it happens with a certificate:
+
+```bash
+# Check nginx can read the CA certificate
+sudo -u www-data cat /etc/vector/certs/mtls/ca.crt
+
+# Verify nginx configuration includes mTLS directives
+sudo nginx -t
+
+# Check nginx error log
+sudo tail -f /var/log/nginx/error.log
+
+# Ensure ssl_verify_client is set to 'optional' at server level
+# And the location /actvt block checks for SUCCESS
+```
+
+**Nginx can't connect to upstream Vector with mTLS**
+
+```bash
+# Verify nginx has proxy_ssl_certificate configured
+grep -A 2 "proxy_ssl_certificate" /etc/nginx/sites-available/actvt-vector
+
+# Check nginx can read the client certificate
+sudo -u www-data cat /etc/vector/certs/mtls/clients/actvt-client-001.crt
+sudo -u www-data cat /etc/vector/certs/mtls/clients/actvt-client-001.key
+
+# Fix permissions if needed
+sudo chmod 644 /etc/vector/certs/mtls/clients/actvt-client-001.crt
+sudo chmod 640 /etc/vector/certs/mtls/clients/actvt-client-001.key
+sudo chown www-data:www-data /etc/vector/certs/mtls/clients/actvt-client-001.*
+```
+
+## Installation Mode Issues
+
+### Standalone Mode Issues
+
+**Port 4096 not accessible from internet**
+
+```bash
+# Verify Vector is listening on 0.0.0.0 (all interfaces)
+sudo netstat -tlnp | grep 4096
+# Should show: 0.0.0.0:4096
+
+# If showing 127.0.0.1:4096, edit vector.toml
+sudo nano /etc/vector/vector.toml
+# Change: address = "0.0.0.0:4096"
+
+# Restart Vector
+sudo systemctl restart vector
+
+# Check firewall
+sudo ufw status | grep 4096
+sudo ufw allow 4096/tcp
+```
+
+### Proxy Mode Issues
+
+**"502 Bad Gateway" when accessing /actvt**
+
+```bash
+# Check Vector is running and listening on localhost
+sudo systemctl status vector
+sudo netstat -tlnp | grep 127.0.0.1:4096
+# Should show: 127.0.0.1:4096
+
+# Check nginx configuration
+sudo nginx -t
+
+# Check nginx can reach Vector
+curl -k https://127.0.0.1:4096
+# Should get WebSocket upgrade error (expected), not connection refused
+
+# Check nginx logs
+sudo tail -f /var/log/nginx/error.log
+```
+
+**Nginx snippet not included properly**
+
+If you see the snippet file but /actvt doesn't work:
+
+```bash
+# Check if snippet exists
+cat /etc/nginx/snippets/actvt-vector-location.conf
+
+# Find your existing server block
+sudo nginx -T 2>/dev/null | grep -B 5 "server_name.*yourdomain.com"
+
+# Include the snippet in your server block
+sudo nano /etc/nginx/sites-available/yoursite
+# Add inside the server block:
+#   include /etc/nginx/snippets/actvt-vector-location.conf;
+
+# Test and reload
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+**Health check endpoint not working**
+
+```bash
+# Test health endpoint
+curl https://monitor.yourdomain.com/actvt/health
+# Should return: OK
+
+# If 404, check nginx location block exists:
+grep -A 3 "/actvt/health" /etc/nginx/sites-available/actvt-vector
+```
+
+### Switching Between Modes
+
+**Changed from standalone to proxy but still binding to 0.0.0.0**
+
+```bash
+# Edit Vector configuration
+sudo nano /etc/vector/vector.toml
+# Change: address = "127.0.0.1:4096"
+
+# Restart Vector
+sudo systemctl restart vector
+
+# Verify binding
+sudo netstat -tlnp | grep 4096
+# Should show: 127.0.0.1:4096
+
+# Close port 4096 in firewall (proxy mode doesn't need it exposed)
+sudo ufw delete allow 4096/tcp
+```
+
+**Changed from proxy to standalone but can't connect**
+
+```bash
+# Edit Vector configuration
+sudo nano /etc/vector/vector.toml
+# Change: address = "0.0.0.0:4096"
+
+# Open port 4096 in firewall
+sudo ufw allow 4096/tcp
+
+# Restart Vector
+sudo systemctl restart vector
+
+# Verify
+sudo netstat -tlnp | grep 4096
+# Should show: 0.0.0.0:4096
 ```
 
 ## Provider-Specific Issues
