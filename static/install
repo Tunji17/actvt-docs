@@ -612,12 +612,12 @@ scrape_interval_secs = 1
 type    = "exec"
 command = [
   "sh", "-c",
-  "echo \"{\\\"os\\\":\\\"$(grep PRETTY_NAME /etc/os-release | cut -d'=' -f2 | tr -d '\\\"')\\\",\\\"arch\\\":\\\"$(uname -m)\\\",\\\"domain\\\":\\\"$(cat /var/lib/actvt/domain 2>/dev/null || echo 'unknown')\\\",\\\"ipv4\\\":\\\"$(ip route get 1 2>/dev/null | awk '{print $$7;exit}' || hostname -I 2>/dev/null | awk '{print $$1}' || echo 'unknown')\\\"}\""
+  "echo \"{\\\"os\\\":\\\"$(grep PRETTY_NAME /etc/os-release | cut -d'=' -f2 | tr -d '\\\"')\\\",\\\"arch\\\":\\\"$(uname -m)\\\",\\\"domain\\\":\\\"$(cat /var/lib/actvt/domain 2>/dev/null || echo 'unknown')\\\",\\\"ipv4\\\":\\\"$(ip route get 1 2>/dev/null | awk '{print $$7;exit}' || hostname -I 2>/dev/null | awk '{print $$1}' || echo 'unknown')\\\",\\\"ipv4_public\\\":\\\"$(curl -s --max-time 5 ifconfig.me || curl -s --max-time 5 icanhazip.com || echo 'unknown')\\\"}\""
 ]
 mode = "scheduled"
 
 [sources.system_info.scheduled]
-exec_interval_secs = 300
+exec_interval_secs = 15
 
 EOF
 
@@ -659,6 +659,7 @@ parsed = parse_json!(.message)
 .arch        = parsed.arch
 .domain      = parsed.domain
 .ipv4        = parsed.ipv4
+.ipv4_public = parsed.ipv4_public
 .host        = get_env_var("HOSTNAME") ?? "unknown-host"
 .timestamp   = format_timestamp!(now(), format: "%+")
 '''
@@ -1643,9 +1644,10 @@ NGINX_SNIPPET
             cat >> "$nginx_snippet" << 'NGINX_MTLS_SNIPPET'
 # mTLS client certificate verification (add to server block)
 # IMPORTANT: Add these lines at the server level, not inside location blocks
+# Use 'optional' to allow mTLS only for /actvt endpoint
 #
 # ssl_client_certificate /etc/vector/certs/mtls/ca.crt;
-# ssl_verify_client on;
+# ssl_verify_client optional;
 # ssl_verify_depth 2;
 #
 
@@ -1655,6 +1657,20 @@ NGINX_MTLS_SNIPPET
         cat >> "$nginx_snippet" << NGINX_SNIPPET
 # WebSocket proxy location block
 location /actvt {
+NGINX_SNIPPET
+
+        # Add mTLS enforcement if enabled
+        if [[ "${ACTVT_ENABLE_MTLS}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+            cat >> "$nginx_snippet" << 'NGINX_SNIPPET'
+    # Enforce mTLS ONLY for this location
+    if ($ssl_client_verify != SUCCESS) {
+        return 496; # SSL Certificate Required
+    }
+
+NGINX_SNIPPET
+        fi
+
+        cat >> "$nginx_snippet" << NGINX_SNIPPET
     proxy_pass https://127.0.0.1:${ACTVT_VECTOR_PORT};
     proxy_http_version 1.1;
     proxy_set_header Upgrade \$http_upgrade;
@@ -1668,7 +1684,21 @@ location /actvt {
     proxy_connect_timeout 60;
     proxy_buffering off;
     proxy_ssl_server_name on;
+    proxy_ssl_name ${domain};
     proxy_ssl_verify off;
+NGINX_SNIPPET
+
+        # Add upstream mTLS certificates if enabled
+        if [[ "${ACTVT_ENABLE_MTLS}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+            cat >> "$nginx_snippet" << NGINX_SNIPPET
+
+    # mTLS to upstream Vector
+    proxy_ssl_certificate /etc/vector/certs/mtls/clients/${ACTVT_MTLS_CLIENT_CN}.crt;
+    proxy_ssl_certificate_key /etc/vector/certs/mtls/clients/${ACTVT_MTLS_CLIENT_CN}.key;
+NGINX_SNIPPET
+        fi
+
+        cat >> "$nginx_snippet" << NGINX_SNIPPET
 }
 
 location = /actvt/health {
@@ -1685,6 +1715,7 @@ NGINX_SNIPPET
         if [[ "${ACTVT_ENABLE_MTLS}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
             log WARNING "mTLS is enabled. You MUST uncomment the ssl_client_certificate directives in the snippet"
             log WARNING "and add them to your server block at the server level (not inside location blocks)."
+            log WARNING "Note: Use 'ssl_verify_client optional' to allow mTLS only for /actvt endpoint."
         fi
 
         log INFO "Then reload nginx: systemctl reload nginx"
@@ -1717,8 +1748,9 @@ EOF
         cat >> "$nginx_config" << 'NGINX_MTLS_EOF'
 
     # mTLS client certificate verification
+    # Using 'optional' to allow mTLS only for /actvt endpoint
     ssl_client_certificate /etc/vector/certs/mtls/ca.crt;
-    ssl_verify_client on;
+    ssl_verify_client optional;
     ssl_verify_depth 2;
 NGINX_MTLS_EOF
         progress "Nginx mTLS client verification enabled"
@@ -1728,6 +1760,20 @@ NGINX_MTLS_EOF
 
     # Actvt Vector WebSocket endpoint
     location /actvt {
+NGINX_EOF
+
+    # Add mTLS enforcement if enabled
+    if [[ "${ACTVT_ENABLE_MTLS}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        cat >> "$nginx_config" << 'NGINX_EOF'
+        # Enforce mTLS ONLY for this location
+        if ($ssl_client_verify != SUCCESS) {
+            return 496; # SSL Certificate Required
+        }
+
+NGINX_EOF
+    fi
+
+    cat >> "$nginx_config" << NGINX_EOF
         # Proxy to local Vector WebSocket server
         proxy_pass https://127.0.0.1:${ACTVT_VECTOR_PORT};
 
@@ -1752,7 +1798,21 @@ NGINX_MTLS_EOF
 
         # Upstream TLS options
         proxy_ssl_server_name on;
+        proxy_ssl_name ${domain};
         proxy_ssl_verify off;
+NGINX_EOF
+
+    # Add upstream mTLS certificates if enabled
+    if [[ "${ACTVT_ENABLE_MTLS}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        cat >> "$nginx_config" << NGINX_EOF
+
+        # mTLS to upstream Vector
+        proxy_ssl_certificate /etc/vector/certs/mtls/clients/${ACTVT_MTLS_CLIENT_CN}.crt;
+        proxy_ssl_certificate_key /etc/vector/certs/mtls/clients/${ACTVT_MTLS_CLIENT_CN}.key;
+NGINX_EOF
+    fi
+
+    cat >> "$nginx_config" << NGINX_EOF
     }
 
     # Health check endpoint (optional)

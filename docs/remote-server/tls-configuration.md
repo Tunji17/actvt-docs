@@ -273,12 +273,42 @@ sudo -u $USER cat /etc/vector/certs/server.crt
 sudo -u $USER cat /etc/vector/certs/server.key
 ```
 
+## Optional: Enable mTLS
+
+For additional security, you can enable mutual TLS (mTLS) to require client certificates:
+
+**What is mTLS?**
+- Adds client certificate authentication on top of server TLS
+- Only clients with valid certificates can connect
+- Provides defense against unauthorized access
+
+**When to use mTLS:**
+- ✅ Production or sensitive environments
+- ✅ Multiple team members need access
+- ✅ Compliance requires mutual authentication
+
+**Setup:**
+See the comprehensive [mTLS Security Guide](mtls-security.md) for:
+- Automated mTLS installation with the install script
+- Manual mTLS configuration
+- Client certificate generation and distribution
+- Certificate management and rotation
+
+**Quick start with mTLS:**
+```bash
+export ACTVT_DOMAIN="monitor.yourdomain.com"
+export ACTVT_EMAIL="admin@yourdomain.com"
+export ACTVT_ENABLE_MTLS=yes
+curl -L https://actvt.io/install | bash
+```
+
 ## Next Steps
 
 Once TLS is configured and working:
 
 1. **Configure Firewall** - Set up firewall rules based on your provider (see [Provider Guides](provider-guides/overview))
 2. **[Test Connection](troubleshooting.md#testing-websocket-connection)** - Verify everything works end-to-end
-3. **[Connect from Actvt](../getting-started/quick-start.md)** - Add your server to Actvt
+3. **[Optional: Enable mTLS](mtls-security.md)** - Add client certificate authentication for enhanced security
+4. **[Connect from Actvt](../getting-started/quick-start.md)** - Add your server to Actvt
 
 Your Vector WebSocket server now has secure TLS encryption and will automatically renew certificates before they expire.
